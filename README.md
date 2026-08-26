@@ -21,13 +21,31 @@ Requires Go 1.26 or later.
 ```bash
 git clone <this repo>
 cd exshell
-make build          # -> ./exshell
-# or
-make install        # go install . -> $GOBIN or $(go env GOPATH)/bin
+make build          # -> ./exshell, run it from here
+make install        # -> /usr/local/bin/exshell, on your $PATH
+make uninstall      # removes it again
 ```
 
-There's no release process yet — `make build`/`make install` from source is
-the only path today.
+`make install` builds for your own platform and copies the binary into
+`/usr/local/bin`. That directory is root-owned, so it will prompt for your
+password — but note that only the *copy* is elevated, not the build.
+
+**Run it as plain `make install`, not `sudo make install`.** Under `sudo` the
+Go build itself runs as root and leaves root-owned files in your module cache
+(`~/go/pkg/mod`), which then breaks ordinary builds as yourself.
+
+To install somewhere you already own — no password, no `sudo` invoked at all:
+
+```bash
+make install PREFIX=$HOME/.local     # -> ~/.local/bin/exshell
+make install BINDIR=/opt/bin         # or set the bin directory outright
+```
+
+Pass the same `PREFIX`/`BINDIR` to `make uninstall` that you passed to
+`make install`.
+
+There's no release process yet, and no cross-compiled binaries — building
+from source is the only path today.
 
 ## Usage
 
