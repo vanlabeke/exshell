@@ -221,16 +221,25 @@ func TestTruncateEmoji(t *testing.T) {
 }
 
 func TestTruncateWideRuneSpareCellPadded(t *testing.T) {
-	// A narrow char followed by a wide one: at some width the wide rune
-	// cannot fit and must be dropped whole, potentially leaving a spare cell
-	// that must be padded rather than left short.
-	s := "a" + "日" // width 1 + 2 = 3
-	got := Truncate(s, 2)
-	if runewidth.StringWidth(got) != 2 {
-		t.Fatalf("Truncate(%q, 2) = %q width %d, want 2", s, got, runewidth.StringWidth(got))
+	// "a" + wide "日" + "b" at w=3 (target=2): "a" fills 1 of the 2 content
+	// cells, then "日" (width 2) cannot fit in the remaining 1 cell and is
+	// dropped whole, leaving a genuine spare cell in the content budget
+	// (unlike "a"+"日" at w=2, target=1, where "a" already exactly fills the
+	// budget and there is no spare either way). The spare must be padded
+	// *before* the ellipsis so the ellipsis remains the trailing character:
+	// want "a …", not "a… " (which is what you get if the ellipsis is
+	// appended first and the spare padded afterward).
+	s := "a" + "日" + "b" // width 1 + 2 + 1 = 4
+	got := Truncate(s, 3)
+	want := "a …"
+	if got != want {
+		t.Fatalf("Truncate(%q, 3) = %q, want %q", s, got, want)
+	}
+	if runewidth.StringWidth(got) != 3 {
+		t.Fatalf("Truncate(%q, 3) = %q width %d, want 3", s, got, runewidth.StringWidth(got))
 	}
 	if !strings.HasSuffix(got, "…") {
-		t.Fatalf("Truncate(%q, 2) = %q, want ellipsis suffix", s, got)
+		t.Fatalf("Truncate(%q, 3) = %q, want ellipsis suffix", s, got)
 	}
 }
 
