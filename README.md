@@ -54,9 +54,10 @@ exshell testdata/simple.csv
 exshell testdata/book.xlsx --print | less -S
 exshell testdata/dates.xlsx | head -3
 
-# List sheet names, then open a specific one.
+# List sheet names, then open a specific one. Flags and the file argument
+# may appear in either order.
 exshell --list-sheets testdata/book.xlsx
-exshell --sheet 2 testdata/book.xlsx
+exshell testdata/book.xlsx --sheet 2
 exshell --sheet Employees testdata/book.xlsx
 
 # A semicolon-delimited European Excel export — no flags needed, the
@@ -67,12 +68,6 @@ exshell testdata/semicolon.csv
 exshell testdata/big.csv
 exshell --interactive testdata/simple.csv
 ```
-
-**Flags must come before the file argument.** `exshell` uses Go's standard
-`flag` package, which stops parsing flags at the first non-flag argument —
-so `exshell book.xlsx --sheet 2` is parsed as *two file arguments*, not one
-file plus a flag, and fails with a usage error. Write `exshell --sheet 2
-book.xlsx` instead. (`--help` documents this too.)
 
 ### Flags
 
@@ -145,8 +140,6 @@ are marked `(hidden)` in the tab bar rather than being skipped, since
   `.xls`/`.doc`/`.ppt` file renamed to `.xlsx` — both share the same
   underlying container format, and the message names both possibilities
   rather than asserting encryption as fact.
-- **Flags must precede the file argument** — see the note under Usage
-  above. This is a consequence of using Go's standard `flag` package as-is.
 - **The viewer's column widths are fixed per sheet**, computed once when the
   sheet loads and independent of terminal width; resizing the terminal
   recomputes how many rows/columns are *visible*, not how wide each column
