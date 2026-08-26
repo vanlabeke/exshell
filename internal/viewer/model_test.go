@@ -350,3 +350,81 @@ func TestHeaderRemainsPresentAtEveryScrollOffset(t *testing.T) {
 		t.Fatalf("rendered view missing header text at scroll offset: %q", view.Content)
 	}
 }
+
+// TestView_InspectModeAfterHorizontalScrollShowsCorrectFullValue is the
+// missing "drive a real View() with inspect mode on" test (Minor 6): every
+// existing inspect-mode test calls m.footerLine(nil) or m.dataLine(...)
+// directly, never m.View() itself, so the wiring between View's per-frame
+// cursorRowVals capture and footerLine's reuse of it has no guard. Cursor
+// is placed on a row/column that is not the first one rendered (row 2,
+// column 8, reached only after scrolling both axes), and every row carries
+// a distinct long value, so a bug that captured the wrong row (not just "no
+// row") would be caught, not masked by footerLine's nil-fallback re-fetch.
+func TestView_InspectModeAfterHorizontalScrollShowsCorrectFullValue(t *testing.T) {
+	patch := map[int]map[int]string{
+		0: {8: "row-zero-long-value-should-not-appear-in-footer"},
+		2: {8: "row-two-long-value-that-must-appear-in-the-inspect-footer"},
+		4: {8: "row-four-long-value-should-not-appear-in-footer"},
+	}
+	bk := singleBook(5, 10, patch)
+	m := NewModel(bk, "sheet1", 30, 10, Options{MaxColWidth: 8}) // narrow: col 8 starts offscreen
+
+	m.setCursorRow(2)
+	m.setCursorCol(8)
+	if end := m.visibleColEnd(m.colOff); 8 < m.colOff || 8 >= end {
+		t.Fatalf("setup invalid: column 8 not visible after scroll (colOff=%d end=%d)", m.colOff, end)
+	}
+
+	sendKey(&m, namedKey(tea.KeyEnter, 0)) // inspect on
+	v := m.View()
+
+	if !strings.Contains(v.Content, "row-two-long-value") {
+		t.Fatalf("View() inspect footer = %q, want the cursor row's full value", v.Content)
+	}
+	if strings.Contains(v.Content, "row-zero-long-value") || strings.Contains(v.Content, "row-four-long-value") {
+		t.Fatalf("View() inspect footer leaked a non-cursor row's value: %q", v.Content)
+	}
+}
+
+// --- C3: cell sanitization must apply through the real View() path too ---
+
+// TestView_SanitizesEmbeddedNewlineKeepsPhysicalLineCountStable pins the
+// viewer half of C3: an embedded newline in a cell value used to split one
+// logical row across two physical lines, desynchronizing the row count the
+// whole viewport/footer arithmetic depends on. With a full-height model
+// (every row visible), View()'s content must always be exactly
+// headerHeight + nRows + footerHeight physical lines, embedded newline or
+// not.
+func TestView_SanitizesEmbeddedNewlineKeepsPhysicalLineCountStable(t *testing.T) {
+	patch := map[int]map[int]string{1: {0: "line one\nline two\nline three"}}
+	bk := singleBook(3, 2, patch)
+	m := NewModel(bk, "sheet1", 40, 10, Options{}) // visibleRows(10-1-1=8) > nRows(3): every row visible
+
+	v := m.View()
+	lines := strings.Split(v.Content, "\n")
+	want := m.headerHeight() + m.nRows() + m.footerHeight()
+	if len(lines) != want {
+		t.Fatalf("View() produced %d physical lines, want %d (header+%d rows+footer): %q",
+			len(lines), want, m.nRows(), v.Content)
+	}
+}
+
+// TestDataLine_SanitizesEscapeSequence pins that a raw terminal
+// title-setting escape sequence embedded in a cell value never reaches
+// dataLine's output verbatim — the viewer path's equivalent of render's
+// TestTable_SanitizesEscapeSequence. The payload is checked as the exact
+// byte sequence, not "any ESC/BEL anywhere in the line": the cursor cell
+// (row 0, col 0 by default) is legitimately wrapped in lipgloss's own
+// reverse-video ANSI escape codes, which are not the bug and must not be
+// mistaken for it.
+func TestDataLine_SanitizesEscapeSequence(t *testing.T) {
+	const payload = "\x1b]0;PWNED\a"
+	patch := map[int]map[int]string{0: {1: payload}}
+	bk := singleBook(2, 2, patch)
+	m := NewModel(bk, "sheet1", 40, 10, Options{})
+
+	got := m.dataLine(0, m.tbl.Row(0))
+	if strings.Contains(got, payload) {
+		t.Fatalf("dataLine = %q, still contains the raw escape sequence verbatim", got)
+	}
+}

@@ -167,10 +167,12 @@ func (m *Model) visibleRows() int {
 
 // visibleColEnd returns the exclusive end index of the contiguous run of
 // columns, starting at colOff, that fit within m.width. Separators between
-// visible columns cost 2 cells each (2*(N-1) for N columns), matching
-// render.go's budgeting. At least one column is always included when nCols >
-// 0, even if its natural width alone exceeds m.width: a degenerate terminal
-// clips or overflows visually, but never panics or shows nothing.
+// visible columns cost len(layout.Sep) cells each (layout.SepCost(N) for N
+// columns), matching render.go's budgeting — both packages spend the same
+// constant so the two output paths can never disagree about it. At least
+// one column is always included when nCols > 0, even if its natural width
+// alone exceeds m.width: a degenerate terminal clips or overflows visually,
+// but never panics or shows nothing.
 func (m *Model) visibleColEnd(colOff int) int {
 	cols := m.lay.Cols
 	n := len(cols)
@@ -187,7 +189,7 @@ func (m *Model) visibleColEnd(colOff int) int {
 	used := cols[colOff].Width
 	end := colOff + 1
 	for end < n {
-		cand := used + 2 + cols[end].Width
+		cand := used + len(layout.Sep) + cols[end].Width
 		if cand > m.width {
 			break
 		}

@@ -119,38 +119,40 @@ func (m *Model) dataLine(r int, row []string) string {
 	cells := make([]string, 0, end-m.colOff)
 	for i := m.colOff; i < end; i++ {
 		c := m.lay.Cols[i]
+		v := layout.Sanitize(row[i])
 		var cell string
-		if i == len(m.lay.Cols)-1 && !c.Numeric {
-			cell = layout.Truncate(row[i], c.Width)
+		if i == len(m.lay.Cols)-1 {
+			cell = layout.Truncate(v, c.Width)
 		} else {
-			cell = layout.Pad(row[i], c.Width, c.Numeric)
+			cell = layout.Pad(v, c.Width, c.Numeric)
 		}
 		if r == m.cursorRow && i == m.cursorCol {
 			cell = cursorStyle.Render(cell)
 		}
 		cells = append(cells, cell)
 	}
-	return strings.Join(cells, "  ")
+	return strings.Join(cells, layout.Sep)
 }
 
 // formatVisibleRow renders values (one entry per column, header or data)
 // across the currently visible column range, following render.go's
 // convention: every column is padded to its width and aligned per
 // c.Numeric, except when the visible range reaches the table's true last
-// column and that column is non-numeric, in which case it is only
-// truncated so the line never carries trailing whitespace.
+// column, which is only ever truncated (regardless of c.Numeric) so the
+// line never carries trailing whitespace.
 func (m *Model) formatVisibleRow(values []string) string {
 	end := m.visibleColEnd(m.colOff)
 	cells := make([]string, 0, end-m.colOff)
 	for i := m.colOff; i < end; i++ {
 		c := m.lay.Cols[i]
-		if i == len(m.lay.Cols)-1 && !c.Numeric {
-			cells = append(cells, layout.Truncate(values[i], c.Width))
+		v := layout.Sanitize(values[i])
+		if i == len(m.lay.Cols)-1 {
+			cells = append(cells, layout.Truncate(v, c.Width))
 			continue
 		}
-		cells = append(cells, layout.Pad(values[i], c.Width, c.Numeric))
+		cells = append(cells, layout.Pad(v, c.Width, c.Numeric))
 	}
-	return strings.Join(cells, "  ")
+	return strings.Join(cells, layout.Sep)
 }
 
 // rowRangeText renders the footer's row-position fragment, e.g.
@@ -199,7 +201,7 @@ func (m *Model) footerLine(cursorRow []string) string {
 			if row == nil {
 				row = m.tbl.Row(m.cursorRow)
 			}
-			val = row[m.cursorCol]
+			val = layout.Sanitize(row[m.cursorCol])
 		}
 		return fmt.Sprintf("%s | %s | %s", sheet, m.rowRangeText(), val)
 	}
