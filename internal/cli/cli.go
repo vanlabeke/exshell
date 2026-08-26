@@ -25,9 +25,9 @@ import (
 	"vanlabeke.dev/exshell/internal/viewer"
 )
 
-// version is printed by --version. exshell has no release process yet, so
-// this is a placeholder the packaging task will wire up properly.
-const version = "0.1.0"
+// The version string reaches Run as a parameter rather than living here: it
+// is stamped in at link time (see main.go), and the linker can only write to
+// a package-level var in the main package.
 
 // usageText is printed verbatim to stdout for --help/-h. It documents every
 // flag plus the interactive viewer's keybindings, since a user who can't get
@@ -127,7 +127,10 @@ func chooseMode(forcePrint, forceInteractive, isTTY bool, termW, termH, needW, n
 // only to stdout/stderr — never to os.Stdout/os.Stderr directly, so callers
 // (including tests) can capture output. It returns the process exit code:
 // 0 ok, 1 runtime error, 2 usage error.
-func Run(args []string, stdout, stderr io.Writer) int {
+//
+// version is what --version prints; the caller owns it because it is stamped
+// in at link time.
+func Run(args []string, stdout, stderr io.Writer, version string) int {
 	fs := flag.NewFlagSet("exshell", flag.ContinueOnError)
 	// Suppress the flag package's own usage dump on error: every error
 	// exshell reports goes through stderr with an "exshell: " prefix

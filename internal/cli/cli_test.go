@@ -169,10 +169,15 @@ func TestResolveSheet(t *testing.T) {
 
 // --- end-to-end Run() ------------------------------------------------------
 
+// testVersion is what runCLI stamps in as the build version. It is
+// deliberately not a real-looking version number, so a test asserting on
+// --version output cannot accidentally pass against a hardcoded default.
+const testVersion = "0.0.0-test"
+
 func runCLI(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
 	var out, errBuf bytes.Buffer
-	code = Run(args, &out, &errBuf)
+	code = Run(args, &out, &errBuf, testVersion)
 	return out.String(), errBuf.String(), code
 }
 
@@ -332,6 +337,12 @@ func TestRun_MisnamedXLSXDetectedByContent(t *testing.T) {
 	}
 }
 
+// TestRun_Version pins that --version reports the version it was given,
+// rather than any value baked into this package. The version is stamped in at
+// link time, so a regression here is silent: a hardcoded fallback still
+// prints something version-shaped and still exits 0. Asserting only that the
+// output mentions "exshell" would pass against exactly that bug, which is why
+// this checks for testVersion specifically.
 func TestRun_Version(t *testing.T) {
 	stdout, stderr, code := runCLI(t, "--version")
 	if code != 0 {
@@ -339,6 +350,9 @@ func TestRun_Version(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "exshell") {
 		t.Errorf("stdout = %q, want it to mention exshell", stdout)
+	}
+	if !strings.Contains(stdout, testVersion) {
+		t.Errorf("stdout = %q, want it to contain the injected version %q", stdout, testVersion)
 	}
 }
 
