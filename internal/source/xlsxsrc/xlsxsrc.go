@@ -43,7 +43,13 @@ func Open(path string) (*Workbook, error) {
 	f, err := excelize.OpenFile(path)
 	if err != nil {
 		if isOLE2Container(path) {
-			return nil, fmt.Errorf("%s is stored in the legacy OLE2 binary container format, not a modern xlsx zip archive — this is either a password-protected xlsx (retry with the correct password) or a legacy .xls/.doc/.ppt file (re-save it as .xlsx): %w", path, err)
+			// The underlying err is deliberately dropped here (unlike the
+			// generic branch below): it is excelize's low-level zip-parsing
+			// failure (e.g. "zip: not a valid zip file"), and appending
+			// that after a careful explanation of exactly why this isn't a
+			// zip archive at all undermines the explanation — it reads as
+			// contradicting itself in its own last clause.
+			return nil, fmt.Errorf("%s is stored in the legacy OLE2 binary container format, not a modern xlsx zip archive — this is either a password-protected xlsx (retry with the correct password) or a legacy .xls/.doc/.ppt file (re-save it as .xlsx)", path)
 		}
 		return nil, fmt.Errorf("could not open %s: %w", path, err)
 	}
