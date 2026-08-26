@@ -14,12 +14,54 @@ LibreOffice. `exshell somefile.xlsx` shows readable, aligned data in under a
 second, and `exshell somefile.csv | grep foo` behaves like any other Unix
 tool.
 
-## Install / build
+## Install
+
+### Homebrew (macOS, Linux)
+
+```bash
+brew tap vanlabeke/tap
+brew install --cask exshell
+```
+
+macOS binaries are a universal build (Apple Silicon and Intel in one file),
+code-signed with a Developer ID and notarized, so Gatekeeper accepts them
+without a warning.
+
+### Debian / Ubuntu
+
+```bash
+sudo install -d /etc/apt/keyrings
+curl -fsSL https://pkg.vanlabeke.dev/apt/gpg.key \
+  | sudo tee /etc/apt/keyrings/vanlabeke.asc > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/vanlabeke.asc] https://pkg.vanlabeke.dev/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/vanlabeke.list
+sudo apt update && sudo apt install exshell
+```
+
+### Fedora / RHEL / openSUSE
+
+```bash
+sudo curl -fsSL -o /etc/yum.repos.d/vanlabeke.repo \
+  https://pkg.vanlabeke.dev/yum/vanlabeke.repo
+sudo dnf install exshell
+```
+
+### FreeBSD / OpenBSD / NetBSD
+
+Download the tarball for your platform from the
+[releases page](https://github.com/vanlabeke/exshell/releases). There is no
+native port yet — `pkg install` cannot be automated from CI, since it means a
+human submitting to the ports tree.
+
+Packages install to `/usr/bin`; a `make install` from source uses
+`/usr/local/bin`, so the two never collide.
+
+## Build from source
 
 Requires Go 1.26 or later.
 
 ```bash
-git clone <this repo>
+git clone https://github.com/vanlabeke/exshell
 cd exshell
 make build          # -> ./exshell, run it from here
 make install        # -> /usr/local/bin/exshell, on your $PATH
@@ -44,8 +86,11 @@ make install BINDIR=/opt/bin         # or set the bin directory outright
 Pass the same `PREFIX`/`BINDIR` to `make uninstall` that you passed to
 `make install`.
 
-There's no release process yet, and no cross-compiled binaries — building
-from source is the only path today.
+Releases are cut by pushing a tag (`git tag v1.2.3 && git push origin v1.2.3`),
+which builds every platform, signs and notarizes the macOS binary, publishes
+the GitHub release, updates the Homebrew cask, and refreshes the apt/yum
+metadata. `exshell --version` reports the tag it was built from; a build from
+source reports its module pseudo-version instead of pretending to be a release.
 
 ## Usage
 
