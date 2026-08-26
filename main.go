@@ -1,11 +1,12 @@
+// Command exshell is a terminal viewer for CSV and XLSX files.
 package main
 
 import (
-	"fmt"
 	"os"
+
+	"vanlabeke.dev/exshell/internal/cli"
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "exshell: not implemented yet")
-	os.Exit(1)
+	os.Exit(cli.Run(os.Args[1:], os.Stdout, os.Stderr))
 }
