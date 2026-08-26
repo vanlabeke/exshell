@@ -46,6 +46,58 @@ func TestComputeNaturalWidth_TwoColumns(t *testing.T) {
 	}
 }
 
+// --- Compute: Width>=1 invariant (C2) ---
+//
+// Compute must guarantee Col.Width >= 1 regardless of what MaxColWidth it is
+// given, even a value the CLI should already have rejected as a usage
+// error: layout owns this invariant defensively rather than trusting every
+// caller to validate first, per the brief's ruling that render.go's
+// strings.Repeat panic was ultimately layout's invariant to keep.
+
+func TestComputeWidthInvariant_NegativeMaxColWidthNeverProducesNegativeWidth(t *testing.T) {
+	tbl := table.New("t", []string{"label"}, [][]string{
+		{"this value is much longer than five cells"},
+	})
+	l := Compute(tbl, Options{MaxColWidth: -1})
+	if l.Cols[0].Width != 1 {
+		t.Fatalf("width = %d, want floored to 1 for MaxColWidth -1", l.Cols[0].Width)
+	}
+}
+
+func TestComputeWidthInvariant_ZeroWidthColumnNeverProducesNegativeWidth(t *testing.T) {
+	// An empty header and no rows naturally measures 0 before the floor.
+	tbl := table.New("t", []string{""}, nil)
+	l := Compute(tbl, Options{MaxColWidth: -5})
+	if l.Cols[0].Width != 1 {
+		t.Fatalf("width = %d, want floored to 1", l.Cols[0].Width)
+	}
+}
+
+// --- Compute/render: Unbounded sentinel (I1) ---
+
+func TestComputeUnboundedMaxColWidthDisablesCap(t *testing.T) {
+	long := strings.Repeat("x", 500)
+	tbl := table.New("t", []string{"Col"}, [][]string{{long}})
+	l := Compute(tbl, Options{MaxColWidth: Unbounded})
+	if l.Cols[0].Width != 500 {
+		t.Fatalf("width = %d, want 500 (uncapped)", l.Cols[0].Width)
+	}
+}
+
+func TestComputeUnboundedSampleRowsMeasuresEveryRow(t *testing.T) {
+	rows := make([][]string, 1500)
+	for i := range rows {
+		rows[i] = []string{"a"}
+	}
+	rows[1200] = []string{strings.Repeat("z", 50)} // beyond the default 1000-row sample
+	tbl := table.New("t", []string{"Col"}, rows)
+
+	l := Compute(tbl, Options{SampleRows: Unbounded, MaxColWidth: Unbounded})
+	if l.Cols[0].Width != 50 {
+		t.Fatalf("width = %d, want 50 (row 1200 must be measured)", l.Cols[0].Width)
+	}
+}
+
 // --- Compute: MaxColWidth clamp ---
 
 func TestComputeMaxColWidthClamp(t *testing.T) {
@@ -373,5 +425,88 @@ func TestNumericDetection_NonNumericColumn(t *testing.T) {
 	l := Compute(tbl, Options{})
 	if l.Cols[0].Numeric {
 		t.Fatalf("Numeric = true for text column, want false")
+	}
+}
+
+// --- Sep / SepCost ---
+
+func TestSepCost(t *testing.T) {
+	cases := []struct {
+		n    int
+		want int
+	}{
+		{0, 0},
+		{1, 0},
+		{2, 2},
+		{5, 8},
+	}
+	for _, c := range cases {
+		if got := SepCost(c.n); got != c.want {
+			t.Errorf("SepCost(%d) = %d, want %d", c.n, got, c.want)
+		}
+	}
+}
+
+// --- Sanitize (C3) ---
+
+func TestSanitize_NewlineCarriageReturnTabBecomeSpace(t *testing.T) {
+	got := Sanitize("line1\nline2\r\ncol\ttab")
+	want := "line1 line2  col tab"
+	if got != want {
+		t.Fatalf("Sanitize = %q, want %q", got, want)
+	}
+}
+
+func TestSanitize_EscapeSequenceNeutralized(t *testing.T) {
+	// ESC ]0;PWNED BEL — a terminal title-setting escape sequence. Neither
+	// the ESC (0x1B) nor the BEL (0x07) may survive verbatim.
+	raw := "\x1b]0;PWNED\a"
+	got := Sanitize(raw)
+	if strings.ContainsRune(got, 0x1b) || strings.ContainsRune(got, 0x07) {
+		t.Fatalf("Sanitize(%q) = %q, still contains a raw control byte", raw, got)
+	}
+	// The literal text in between must survive; only the control bytes are
+	// replaced.
+	if !strings.Contains(got, "]0;PWNED") {
+		t.Fatalf("Sanitize(%q) = %q, lost the non-control payload", raw, got)
+	}
+}
+
+func TestSanitize_C1ControlReplaced(t *testing.T) {
+	got := Sanitize("ab") // U+0085 NEL, a C1 control character
+	if strings.ContainsRune(got, 0x85) {
+		t.Fatalf("Sanitize = %q, still contains the C1 control character", got)
+	}
+	if !strings.HasPrefix(got, "a") || !strings.HasSuffix(got, "b") {
+		t.Fatalf("Sanitize = %q, want surrounding text preserved", got)
+	}
+}
+
+func TestSanitize_PlainTextUnchanged(t *testing.T) {
+	s := "Alice, 東京太郎, Bob 🎉 — all clean"
+	if got := Sanitize(s); got != s {
+		t.Fatalf("Sanitize(%q) = %q, want unchanged", s, got)
+	}
+}
+
+func TestSanitize_EmptyStringUnchanged(t *testing.T) {
+	if got := Sanitize(""); got != "" {
+		t.Fatalf("Sanitize(\"\") = %q, want empty", got)
+	}
+}
+
+// TestComputeSanitizesBeforeMeasuring pins that Compute measures the
+// sanitized form of a cell, not the raw one: runewidth scores \n and \t at
+// ~0 cells, so a column whose only content is a newline/tab-bearing value
+// would otherwise measure far too narrow — exactly what let C3's escape
+// passthrough go unnoticed by width math for so long.
+func TestComputeSanitizesBeforeMeasuring(t *testing.T) {
+	tbl := table.New("t", []string{"Col"}, [][]string{
+		{"line one\nline two"}, // sanitizes to "line one line two", width 17
+	})
+	l := Compute(tbl, Options{})
+	want := len("line one line two")
+	if l.Cols[0].Width != want {
+		t.Fatalf("width = %d, want %d (measured on the sanitized form)", l.Cols[0].Width, want)
 	}
 }

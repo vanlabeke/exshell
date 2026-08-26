@@ -7,6 +7,7 @@
 package layout
 
 import (
+	"math"
 	"strconv"
 	"strings"
 
@@ -21,6 +22,33 @@ const (
 	defaultSampleRows  = 1000
 )
 
+// Unbounded is a sentinel for Options.MaxColWidth and Options.SampleRows
+// meaning "no limit at all": every row is measured (SampleRows) and no
+// per-column cap is applied (MaxColWidth). It exists for exactly one
+// caller: the print path's unconstrained (piped/redirected) output, where
+// R18 requires exshell not to lose bytes — see render.Table. It is
+// distinct from the zero value (which means "apply the documented
+// default") and is never produced by parsing user input: a user-supplied
+// --max-col-width is validated at the CLI edge (rejecting anything < 1)
+// before it ever reaches Compute, so this sentinel can never collide with
+// that validation.
+const Unbounded = math.MaxInt
+
+// Sep is the two-space column separator used by both output paths
+// (render and viewer), so alignment math never drifts from what is
+// actually printed on screen.
+const Sep = "  "
+
+// SepCost is the display-cell cost of the Sep separators between n
+// columns: len(Sep)*(n-1) for n >= 1, 0 for n <= 1 (no separator without a
+// second column).
+func SepCost(n int) int {
+	if n <= 1 {
+		return 0
+	}
+	return len(Sep) * (n - 1)
+}
+
 // Col describes one computed column.
 type Col struct {
 	Name    string
@@ -33,10 +61,19 @@ type Layout struct{ Cols []Col }
 
 // Options controls Compute. Zero values take documented defaults.
 type Options struct {
-	MaxColWidth int // default 40 when zero
+	// MaxColWidth is the per-column cap: 0 applies the documented default
+	// (40); Unbounded disables the cap entirely; any other value N clamps
+	// every column to at most N. Compute guarantees Col.Width >= 1
+	// regardless of what is passed here, even a value below 1 that should
+	// never reach Compute in the first place (callers reject that as a
+	// usage error before calling in) — the invariant is Compute's to keep,
+	// not its callers'.
+	MaxColWidth int
 	MinColWidth int // shrink floor, default 6 when zero
-	SampleRows  int // default 1000 when zero
-	TotalWidth  int // 0 = unconstrained; >0 = cells available for column CONTENT
+	// SampleRows is how many data rows are measured for natural width: 0
+	// applies the documented default (1000); Unbounded measures every row.
+	SampleRows int
+	TotalWidth int // 0 = unconstrained; >0 = cells available for column CONTENT
 }
 
 // currencyPrefixes are the leading currency symbols stripped before parsing
@@ -68,6 +105,7 @@ func Compute(t table.Table, opts Options) Layout {
 	numericHits := make([]int, n)
 
 	for i, name := range cols {
+		name = Sanitize(name)
 		if w := runewidth.StringWidth(name); w > widths[i] {
 			widths[i] = w
 		}
@@ -81,7 +119,7 @@ func Compute(t table.Table, opts Options) Layout {
 	for r := 0; r < sampleN; r++ {
 		row := t.Row(r)
 		for i := 0; i < n; i++ {
-			cell := row[i]
+			cell := Sanitize(row[i])
 			if w := runewidth.StringWidth(cell); w > widths[i] {
 				widths[i] = w
 			}
@@ -98,14 +136,20 @@ func Compute(t table.Table, opts Options) Layout {
 	resultCols := make([]Col, n)
 	for i, name := range cols {
 		w := widths[i]
-		if w < 1 {
-			w = 1
-		}
+		// The MaxColWidth ceiling is applied before the floor, not after:
+		// Compute owns the invariant that Width is always >= 1, and a
+		// caller-supplied MaxColWidth below 1 (which should never reach
+		// here — see the Options.MaxColWidth doc — would otherwise win the
+		// clamp and drive Width negative, which is exactly what used to
+		// send render.Table's strings.Repeat into a panic).
 		if w > opts.MaxColWidth {
 			w = opts.MaxColWidth
 		}
+		if w < 1 {
+			w = 1
+		}
 		numeric := nonEmpty[i] > 0 && float64(numericHits[i])/float64(nonEmpty[i]) >= 0.8
-		resultCols[i] = Col{Name: name, Width: w, Numeric: numeric}
+		resultCols[i] = Col{Name: Sanitize(name), Width: w, Numeric: numeric}
 	}
 
 	if opts.TotalWidth > 0 {
@@ -164,6 +208,68 @@ func isNumericCell(s string) bool {
 	}
 	_, err := strconv.ParseFloat(s, 64)
 	return err == nil
+}
+
+// sanitizePlaceholder replaces a stray C0/C1 control byte with something
+// visible and exactly one display cell wide, rather than dropping it (which
+// would silently shrink the cell) or passing it through (which is how a
+// terminal escape sequence embedded in a cell value would reach the real
+// terminal).
+const sanitizePlaceholder = '�'
+
+// Sanitize maps a raw cell or header value to one safe to both measure and
+// print. exshell's whole purpose is displaying files nobody necessarily
+// trusts, so nothing may reach a terminal unfiltered: \n, \r, and \t become
+// a single space each — a quoted CSV field is allowed to contain a real
+// newline (csvsrc preserves it faithfully in the data model, correctly),
+// but rendering it as one requires no consumer knows about it, which is
+// exactly the bug this closes: an embedded newline used to split one
+// logical row across multiple physical lines, breaking the print grid and,
+// in the viewer, desynchronising the row-count arithmetic the whole
+// viewport depends on. Every other C0 (0x00-0x1F, 0x7F) or C1 (0x80-0x9F)
+// control character — including the ESC that starts a terminal escape
+// sequence — is replaced with a single placeholder rune, so no cell value
+// can inject escape sequences into the terminal, and width is never
+// misjudged for a rune runewidth would otherwise score near zero.
+//
+// Compute calls Sanitize before measuring, so every Col.Width already
+// accounts for the sanitized form. render and viewer call Sanitize again
+// immediately before formatting a raw cell value with Truncate/Pad, so
+// widths and output always agree — this is the one shared place both
+// output paths apply it, per internal/layout's whole reason for existing.
+func Sanitize(s string) string {
+	hasControl := false
+	for _, r := range s {
+		if isControl(r) {
+			hasControl = true
+			break
+		}
+	}
+	if !hasControl {
+		return s
+	}
+
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\n', '\r', '\t':
+			b.WriteByte(' ')
+		default:
+			if isControl(r) {
+				b.WriteRune(sanitizePlaceholder)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
+}
+
+// isControl reports whether r is a C0 control character (0x00-0x1F), DEL
+// (0x7F), or a C1 control character (0x80-0x9F).
+func isControl(r rune) bool {
+	return (r >= 0x00 && r <= 0x1F) || r == 0x7F || (r >= 0x80 && r <= 0x9F)
 }
 
 // ellipsis is the marker Truncate appends when it trims a string. It is a
