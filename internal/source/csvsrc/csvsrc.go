@@ -76,13 +76,18 @@ func Load(r io.Reader, name string, opts Options) (table.Table, error) {
 
 	delim := opts.Delim
 	if delim == 0 {
-		sniffSample := sample
+		// Decode first, then trim: a raw byte-level search for '\n' is only
+		// safe on UTF-8-superset text. For UTF-16, a lone 0x0A can appear as
+		// half of an unrelated code unit, or as a real newline's first byte
+		// separated from its paired 0x00, so trimming raw bytes would risk
+		// corrupting the tail of the sniff sample instead of just shortening
+		// it.
+		decodedSniff, _, _ := transform.Bytes(newDecoder(opts), sample)
 		if truncated {
 			// The 64 KB cut may have landed mid-record. Drop the dangling
 			// tail so it can't skew delimiter scoring.
-			sniffSample = trimToLastNewline(sniffSample)
+			decodedSniff = trimToLastNewline(decodedSniff)
 		}
-		decodedSniff, _, _ := transform.Bytes(newDecoder(opts), sniffSample)
 		delim = SniffDelim(decodedSniff)
 	}
 
@@ -180,20 +185,35 @@ func SniffDelim(sample []byte) rune {
 }
 
 // newDecoder returns a fresh transform.Transformer decoding a raw CSV byte
-// stream to UTF-8 per opts. An explicit opts.Encoding always wins. With no
-// explicit encoding, a leading UTF-8 or UTF-16 (LE/BE) byte-order mark is
-// detected and stripped/decoded; unmarked input passes through unchanged.
+// stream to UTF-8 per opts.
+//
+// An explicit opts.Encoding always wins over BOM sniffing and is
+// authoritative: it is never redirected to a different encoding by a BOM
+// that belongs to some other encoding. The one exception is that a leading
+// UTF-8 BOM is still stripped even when "utf8" is requested explicitly —
+// removing the BOM of the encoding you were told to use isn't sniffing, it's
+// just not leaking U+FEFF into the first header cell.
+//
+// Only the unset default ("") sniffs: a leading UTF-8 or UTF-16 (LE/BE)
+// byte-order mark is detected and stripped/decoded; unmarked input passes
+// through unchanged.
 func newDecoder(opts Options) transform.Transformer {
 	switch opts.Encoding {
 	case "latin1":
 		return charmap.ISO8859_1.NewDecoder()
 	case "utf16":
-		// Forced UTF-16: still honor a BOM if present, but assume
-		// little-endian with no BOM rather than refusing to decode.
-		return unicode.BOMOverride(unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM).NewDecoder())
+		// Forced UTF-16, authoritative: a UTF-16 BOM (the only kind this
+		// decoder can even recognize, since it reads 2-byte code units)
+		// still selects endianness, but nothing can redirect this to a
+		// different encoding. Assume little-endian when no BOM is present.
+		return unicode.UTF16(unicode.LittleEndian, unicode.UseBOM).NewDecoder()
+	case "utf8":
+		// Forced UTF-8, authoritative: strip a UTF-8 BOM if present, but a
+		// foreign (e.g. UTF-16) BOM must not redirect the decoder.
+		return unicode.UTF8BOM.NewDecoder()
 	default:
-		// "" and "utf8": sniff a BOM (UTF-8 or UTF-16); otherwise pass
-		// bytes through unchanged.
+		// "": sniff a BOM (UTF-8 or UTF-16); otherwise pass bytes through
+		// unchanged.
 		return unicode.BOMOverride(encoding.Nop.NewDecoder())
 	}
 }
