@@ -1,0 +1,11 @@
+id,name,department,salary,active
+1,Alice Johnson,Engineering,95000,true
+2,Bob Smith,Sales,72000,true
+3,Carla Diaz,Marketing,68000,false
+4,David Lee,Engineering,101000,true
+5,Eve Turner,Support,58000,true
+6,Frank Wu,Engineering,99000,false
+7,Grace Kim,Sales,75000,true
+8,Hank Ortiz,Marketing,64000,true
+9,Ivy Chen,Support,61000,false
+10,Jack Brown,Engineering,108000,true

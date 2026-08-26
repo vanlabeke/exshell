@@ -301,7 +301,12 @@ func TestRun_Version(t *testing.T) {
 	}
 }
 
-func TestRun_ForceInteractiveSurfacesNotImplemented(t *testing.T) {
+// TestRun_ForceInteractiveWithoutTTYExitsOneWithMessage pins that --interactive
+// against a non-TTY destination (the only kind a test harness can drive) exits
+// 1 with an "exshell: "-prefixed message: Bubble Tea itself fails fast when it
+// can't acquire a real terminal, and the CLI surfaces that failure like any
+// other runtime error rather than crashing or hanging.
+func TestRun_ForceInteractiveWithoutTTYExitsOneWithMessage(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "t.csv", []byte("a\n1\n"))
 

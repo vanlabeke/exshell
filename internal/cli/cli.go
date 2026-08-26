@@ -28,6 +28,53 @@ import (
 // this is a placeholder the packaging task will wire up properly.
 const version = "0.1.0"
 
+// usageText is printed verbatim to stdout for --help/-h. It documents every
+// flag plus the interactive viewer's keybindings, since a user who can't get
+// into the TUI (piped output, or a --print run) has no other way to
+// discover them.
+const usageText = `exshell — view CSV and XLSX files in a terminal
+
+Usage:
+  exshell [flags] <file>
+
+exshell prints small files as an aligned plain-text table and opens larger
+ones in an interactive viewer. Piped or redirected output is always
+plain-text, so exshell composes with other Unix tools (less, grep, ...).
+
+Flags:
+  -p, --print              force plain-text output, even to a terminal
+  -i, --interactive        force the interactive viewer, even when piped
+      --sheet <name|#>     sheet to open: by name, or 1-based index
+      --list-sheets        print sheet names and exit
+      --delim <char>       override the sniffed CSV delimiter
+      --no-header          treat row 1 as data; synthesize A, B, C... labels
+      --encoding <enc>     input encoding: utf8, latin1, or utf16
+      --max-col-width <n>  maximum column width (default 40)
+      --version            print the version and exit
+  -h, --help                show this help and exit
+
+Interactive viewer keybindings (once open):
+  up/down/left/right, k/j/h/l    move the cursor
+  PgUp/PgDn, ctrl+b/ctrl+f       page up/down
+  g / G                          jump to first / last row
+  Home / End                     jump to first / last column
+  /                              search (Enter runs it, Esc cancels)
+  n / N                          jump to next / previous match
+  Enter                          toggle inspect mode (full cell value)
+  Tab / shift+Tab                switch to next / previous sheet
+  ?                              toggle the in-app help screen
+  q, ctrl+c                      quit
+
+Examples:
+  exshell data.csv                  # print or open the viewer, by size
+  exshell data.xlsx | less -S       # always plain text, pipe-friendly
+  exshell --list-sheets book.xlsx
+  exshell --sheet 2 book.xlsx
+
+Note: flags must come before the file argument (exshell book.xlsx --sheet 2
+is parsed as two file arguments, not one file plus a flag).
+`
+
 // Mode selects between the plain-text print path and the interactive
 // viewer.
 type Mode int
@@ -101,6 +148,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
+			fmt.Fprint(stdout, usageText)
 			return 0
 		}
 		fmt.Fprintf(stderr, "exshell: %v\n", err)

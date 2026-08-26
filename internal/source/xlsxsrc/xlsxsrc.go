@@ -43,9 +43,9 @@ func Open(path string) (*Workbook, error) {
 	f, err := excelize.OpenFile(path)
 	if err != nil {
 		if isOLE2Container(path) {
-			return nil, fmt.Errorf("xlsxsrc: %s is stored in the legacy OLE2 binary container format, not a modern xlsx zip archive — this is either a password-protected xlsx (retry with the correct password) or a legacy .xls/.doc/.ppt file (re-save it as .xlsx): %w", path, err)
+			return nil, fmt.Errorf("%s is stored in the legacy OLE2 binary container format, not a modern xlsx zip archive — this is either a password-protected xlsx (retry with the correct password) or a legacy .xls/.doc/.ppt file (re-save it as .xlsx): %w", path, err)
 		}
-		return nil, fmt.Errorf("xlsxsrc: open %s: %w", path, err)
+		return nil, fmt.Errorf("could not open %s: %w", path, err)
 	}
 	return &Workbook{f: f}, nil
 }
@@ -94,12 +94,12 @@ func (w *Workbook) Sheets() []table.SheetInfo {
 // empty, and that is the value exshell shows.
 func (w *Workbook) Table(name string) (table.Table, error) {
 	if !w.hasSheet(name) {
-		return nil, fmt.Errorf("xlsxsrc: no sheet named %q", name)
+		return nil, fmt.Errorf("no sheet named %q", name)
 	}
 
 	rows, err := w.f.Rows(name)
 	if err != nil {
-		return nil, fmt.Errorf("xlsxsrc: reading sheet %q: %w", name, err)
+		return nil, fmt.Errorf("reading sheet %q: %w", name, err)
 	}
 	defer rows.Close()
 
@@ -107,14 +107,14 @@ func (w *Workbook) Table(name string) (table.Table, error) {
 	for rows.Next() {
 		cols, err := rows.Columns()
 		if err != nil {
-			return nil, fmt.Errorf("xlsxsrc: reading sheet %q: %w", name, err)
+			return nil, fmt.Errorf("reading sheet %q: %w", name, err)
 		}
 		// Columns() returns a copy of the row's cells; nothing else here
 		// retains rows' internal state, so it's fine to keep this slice.
 		all = append(all, cols)
 	}
 	if err := rows.Error(); err != nil {
-		return nil, fmt.Errorf("xlsxsrc: reading sheet %q: %w", name, err)
+		return nil, fmt.Errorf("reading sheet %q: %w", name, err)
 	}
 
 	all = trimTrailingEmpty(all)

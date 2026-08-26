@@ -55,12 +55,12 @@ func Load(r io.Reader, name string, opts Options) (table.Table, error) {
 	buf := make([]byte, sampleSize+1)
 	n, err := io.ReadFull(r, buf)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		return nil, fmt.Errorf("csvsrc: %s: %w", name, err)
+		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	read := buf[:n]
 
 	if len(read) == 0 {
-		return nil, fmt.Errorf("csvsrc: %s: file is empty", name)
+		return nil, fmt.Errorf("%s: file is empty", name)
 	}
 
 	truncated := n > sampleSize
@@ -98,10 +98,10 @@ func Load(r io.Reader, name string, opts Options) (table.Table, error) {
 
 	records, err := cr.ReadAll()
 	if err != nil {
-		return nil, fmt.Errorf("csvsrc: %s: %w", name, err)
+		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	if len(records) == 0 {
-		return nil, fmt.Errorf("csvsrc: %s: file is empty", name)
+		return nil, fmt.Errorf("%s: file is empty", name)
 	}
 
 	var cols []string
@@ -121,7 +121,7 @@ func Load(r io.Reader, name string, opts Options) (table.Table, error) {
 	}
 
 	if len(cols) == 0 {
-		return nil, fmt.Errorf("csvsrc: %s: file is empty", name)
+		return nil, fmt.Errorf("%s: file is empty", name)
 	}
 
 	return table.New(name, cols, rows), nil

@@ -137,7 +137,7 @@ func (b *singleSheetBook) Sheets() []SheetInfo {
 
 func (b *singleSheetBook) Table(name string) (Table, error) {
 	if name != b.t.Name() {
-		return nil, fmt.Errorf("table: no sheet named %q", name)
+		return nil, fmt.Errorf("no sheet named %q", name)
 	}
 	return b.t, nil
 }
