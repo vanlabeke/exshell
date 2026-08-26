@@ -1,0 +1,232 @@
+# GoReleaser configuration for exshell.
+#
+# Local dry run (no signing, no publishing, nothing leaves the machine):
+#
+#     goreleaser release --snapshot --clean --skip=sign,publish
+#
+# Real releases run from CI on a tag (see .github/workflows/release.yml).
+#
+# exshell is pure Go and builds with CGO_ENABLED=0, so every target here
+# cross-compiles from any host with no toolchain beyond Go itself.
+version: 2
+
+project_name: exshell
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  # Non-macOS targets. Kept separate from darwin because only darwin
+  # binaries get code-signed, and hooks are per-build.
+  - id: unix
+    main: .
+    binary: exshell
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .ShortCommit }}
+      - -X main.date={{ .CommitDate }}
+    # Reproducible builds: stamp binaries with the commit time rather than
+    # the build time, so rebuilding a tag yields identical bytes.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - linux
+      - freebsd
+      - openbsd
+      - netbsd
+    goarch:
+      - amd64
+      - arm64
+
+  - id: darwin
+    main: .
+    binary: exshell
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .ShortCommit }}
+      - -X main.date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+# Ship one macOS binary that runs natively on both Intel and Apple Silicon.
+# replace: true drops the per-arch darwin binaries so the release carries a
+# single macOS artifact instead of three.
+#
+# Signing happens here rather than on the per-arch builds above because lipo
+# produces a new file, which would invalidate any earlier signature.
+universal_binaries:
+  - id: darwin-universal
+    ids:
+      - darwin
+    replace: true
+    hooks:
+      post: ./scripts/codesign.sh "{{ .Path }}"
+
+# Two archive sets rather than one with a format override, because a Homebrew
+# tap cannot choose between two archives covering the same OS/arch — pointing
+# the cask at `tarballs` specifically is what disambiguates it.
+archives:
+  - id: tarballs
+    ids:
+      - unix
+      - darwin-universal
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_
+      {{- if eq .Arch "all" }}universal{{ else }}{{ .Arch }}{{ end }}
+    files:
+      - README.md
+      - LICENSE
+
+  # macOS zip, existing solely to carry the binary to notarytool, which
+  # accepts zip/dmg/pkg but not tar.gz.
+  #
+  # Notarizing this zip also covers the identical binary inside the tar.gz:
+  # Apple registers the signed binary's code-directory hash, and Gatekeeper
+  # checks that hash online. The ticket follows the binary, not the container
+  # — which is why a bare CLI binary needs no stapling to pass.
+  - id: macos-zip
+    ids:
+      - darwin-universal
+    formats:
+      - zip
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_
+      {{- if eq .Arch "all" }}universal{{ else }}{{ .Arch }}{{ end }}
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# .deb and .rpm via the embedded nfpm. These are attached to the GitHub
+# release AND consumed by the apt/yum repositories published to
+# pkg.vanlabeke.dev — see .github/workflows/release.yml.
+nfpms:
+  - id: packages
+    package_name: exshell
+    ids:
+      - unix
+    formats:
+      - deb
+      - rpm
+    maintainer: Cedric Van Labeke <cedric@vanlabeke.dev>
+    description: |-
+      Terminal viewer for CSV and XLSX files.
+      Prints aligned tabular data to stdout, or opens a scrolling
+      full-screen viewer when the data does not fit the window.
+    homepage: https://github.com/vanlabeke/exshell
+    license: BSD-3-Clause
+    section: utils
+    priority: optional
+    # /usr/bin, not /usr/local/bin: distribution packages own /usr, while
+    # /usr/local is reserved for what the administrator installs by hand
+    # (which is what `make install` does).
+    bindir: /usr/bin
+    contents:
+      - src: README.md
+        dst: /usr/share/doc/exshell/README.md
+      - src: LICENSE
+        dst: /usr/share/doc/exshell/LICENSE
+    # Package-level GPG signatures, verified by apt/dnf when gpgcheck=1 —
+    # separate from, and in addition to, the repository metadata signature.
+    #
+    # envOrDefault (not .Env.X) is deliberate: a bare .Env reference to an
+    # unset variable is a template error, which would break every local
+    # snapshot build. Empty means "do not sign", so unsigned snapshots work
+    # with no key present.
+    deb:
+      signature:
+        key_file: '{{ envOrDefault "GPG_KEY_FILE" "" }}'
+    rpm:
+      group: Applications/Text
+      signature:
+        key_file: '{{ envOrDefault "GPG_KEY_FILE" "" }}'
+
+# Homebrew cask, written to vanlabeke/homebrew-tap on every release.
+#
+#     brew tap vanlabeke/tap
+#     brew install --cask exshell
+#
+# A cask rather than a formula: GoReleaser is phasing out `brews`, and
+# Homebrew's own guidance is that pre-built binaries belong in casks —
+# formulas are expected to build from source. Casks also handle the macOS
+# quarantine attribute for us.
+homebrew_casks:
+  - name: exshell
+    # tarballs only — see the archives comment above.
+    ids:
+      - tarballs
+    repository:
+      owner: vanlabeke
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/vanlabeke/exshell
+    description: Terminal viewer for CSV and XLSX files
+    commit_author:
+      name: goreleaser
+      email: noreply@vanlabeke.dev
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: vanlabeke
+    name: exshell
+  draft: false
+  prerelease: auto
+  footer: |
+    ---
+
+    ## Install
+
+    **Homebrew (macOS, Linux)**
+
+        brew tap vanlabeke/tap
+        brew install exshell
+
+    **Debian / Ubuntu**
+
+        curl -fsSL https://pkg.vanlabeke.dev/apt/gpg.key \
+          | sudo tee /etc/apt/keyrings/vanlabeke.asc > /dev/null
+        echo "deb [signed-by=/etc/apt/keyrings/vanlabeke.asc] https://pkg.vanlabeke.dev/apt stable main" \
+          | sudo tee /etc/apt/sources.list.d/vanlabeke.list
+        sudo apt update && sudo apt install exshell
+
+    **Fedora / RHEL / openSUSE**
+
+        sudo curl -fsSL -o /etc/yum.repos.d/vanlabeke.repo \
+          https://pkg.vanlabeke.dev/yum/vanlabeke.repo
+        sudo dnf install exshell
+
+    **FreeBSD / OpenBSD / NetBSD** — download the tarball below; there is no
+    native port yet.
