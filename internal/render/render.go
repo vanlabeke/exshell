@@ -40,8 +40,19 @@ func Table(w io.Writer, t table.Table, opts Options) error {
 	n := len(cols)
 
 	lopts := layout.Options{MaxColWidth: opts.MaxColWidth}
-	if opts.Width > 0 {
-		lopts.TotalWidth = opts.Width - sepCost(n)
+	switch {
+	case opts.Width > 0:
+		lopts.TotalWidth = opts.Width - layout.SepCost(n)
+	case opts.MaxColWidth == 0:
+		// Unconstrained output (piped or redirected) with no explicit
+		// --max-col-width: controller ruling R18 — exshell must not lose
+		// bytes on the `exshell foo.csv | grep ...` path README.md
+		// advertises, so measure every row and drop the default 40-cell
+		// cap. An explicitly user-supplied --max-col-width (opts.MaxColWidth
+		// > 0, validated >= 1 at the CLI edge) is authoritative and still
+		// truncates here exactly as it does everywhere else.
+		lopts.MaxColWidth = layout.Unbounded
+		lopts.SampleRows = layout.Unbounded
 	}
 	lay := layout.Compute(t, lopts)
 
@@ -69,30 +80,25 @@ func Table(w io.Writer, t table.Table, opts Options) error {
 	return nil
 }
 
-// sepCost is the display-cell cost of the two-space separators between N
-// columns: 2*(N-1) for N>=1, 0 for N<=1 (no separator without a second
-// column).
-func sepCost(n int) int {
-	if n <= 1 {
-		return 0
-	}
-	return 2 * (n - 1)
-}
-
 // formatRow renders one row of raw cell values (a header row or a data row;
-// both have len == len(lay.Cols)) into display cells: right-padded numeric
-// columns are right-aligned, everything else left-aligned — except the
-// final column, which is only ever truncated, never padded, so the line
-// never ends in trailing whitespace.
+// both have len == len(lay.Cols)) into display cells: each value is
+// sanitized (see layout.Sanitize) before formatting, so what is measured
+// and what is emitted always agree. Right-aligned numeric columns are
+// padded on the left, everything else on the right — except the final
+// column, which is only ever truncated, never padded (regardless of
+// Numeric: a numeric column padded on the left produces nothing but
+// trailing spaces when its value is empty, which is exactly the invariant
+// this exception protects), so the line never ends in trailing whitespace.
 func formatRow(values []string, lay layout.Layout) []string {
 	n := len(lay.Cols)
 	cells := make([]string, n)
 	for i, c := range lay.Cols {
-		if i == n-1 && !c.Numeric {
-			cells[i] = layout.Truncate(values[i], c.Width)
+		v := layout.Sanitize(values[i])
+		if i == n-1 {
+			cells[i] = layout.Truncate(v, c.Width)
 			continue
 		}
-		cells[i] = layout.Pad(values[i], c.Width, c.Numeric)
+		cells[i] = layout.Pad(v, c.Width, c.Numeric)
 	}
 	return cells
 }
@@ -109,8 +115,16 @@ func ruleRow(lay layout.Layout) []string {
 	return cells
 }
 
-// writeRow joins cells with two spaces and a trailing newline.
+// writeRow joins cells with the shared column separator and a trailing
+// newline. When the final cell is empty (formatRow's last-column exception
+// produces exactly that for an empty value, never padding), its preceding
+// separator is dropped too — strings.Join alone would still place a
+// separator right before an empty final element, which is trailing
+// whitespace by another name.
 func writeRow(w io.Writer, cells []string) error {
-	_, err := io.WriteString(w, strings.Join(cells, "  ")+"\n")
+	if n := len(cells); n > 0 && cells[n-1] == "" {
+		cells = cells[:n-1]
+	}
+	_, err := io.WriteString(w, strings.Join(cells, layout.Sep)+"\n")
 	return err
 }
