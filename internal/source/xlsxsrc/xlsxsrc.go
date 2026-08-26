@@ -21,35 +21,41 @@ type Workbook struct {
 
 var _ table.Book = (*Workbook)(nil)
 
-// oleIdentifier is the magic header of the OLE Compound File Binary format
-// that Excel uses to store password-encrypted xlsx files. excelize itself
-// checks for this same header before attempting decryption (see
+// oleIdentifier is the magic header of the OLE2 Compound File Binary
+// container format. It is NOT specific to encryption: it is equally the
+// header of a password-encrypted xlsx, a legacy pre-2007 .xls/.doc/.ppt
+// file, or any other OLE2 container someone renamed to .xlsx. excelize
+// itself checks for this same header before attempting decryption (see
 // openReaderAt in its excelize.go); we check it independently so we can
 // report a clear, actionable error even in the case excelize does not:
 // opening an encrypted file with no password at all fails deep inside its
 // decryption path with the generic "unsupported workbook file format",
-// which never mentions encryption.
+// which never mentions encryption. But because the header is ambiguous, our
+// own message must not claim encryption as fact either — it must cover both
+// real possibilities.
 var oleIdentifier = []byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}
 
-// Open opens the xlsx workbook at path. A password-protected workbook
-// returns an error whose message mentions encryption/password, regardless of
-// which underlying excelize error triggered it.
+// Open opens the xlsx workbook at path. If the file turns out to be stored
+// in the legacy OLE2 binary container (shared by encrypted xlsx and
+// pre-2007 .xls/.doc/.ppt files), the returned error describes that
+// ambiguity rather than asserting a single cause — see isOLE2Container.
 func Open(path string) (*Workbook, error) {
 	f, err := excelize.OpenFile(path)
 	if err != nil {
-		if looksEncrypted(path) {
-			return nil, fmt.Errorf("xlsxsrc: %s appears to be password-protected (encrypted); open it with the correct password: %w", path, err)
+		if isOLE2Container(path) {
+			return nil, fmt.Errorf("xlsxsrc: %s is stored in the legacy OLE2 binary container format, not a modern xlsx zip archive — this is either a password-protected xlsx (retry with the correct password) or a legacy .xls/.doc/.ppt file (re-save it as .xlsx): %w", path, err)
 		}
 		return nil, fmt.Errorf("xlsxsrc: open %s: %w", path, err)
 	}
 	return &Workbook{f: f}, nil
 }
 
-// looksEncrypted reports whether the file at path starts with the OLE
-// Compound File header xlsx uses for password-protected workbooks. Failures
-// reading the file are treated as "not encrypted" here; the caller already
-// has a real error to report in that case.
-func looksEncrypted(path string) bool {
+// isOLE2Container reports whether the file at path starts with the OLE2
+// Compound File Binary magic header. This is a container-format signature,
+// not proof of encryption: it also matches legacy pre-2007 .xls/.doc/.ppt
+// files. Failures reading the file are treated as "not an OLE2 container"
+// here; the caller already has a real error to report in that case.
+func isOLE2Container(path string) bool {
 	file, err := os.Open(path)
 	if err != nil {
 		return false

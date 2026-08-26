@@ -1,6 +1,7 @@
 package xlsxsrc
 
 import (
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -250,6 +251,48 @@ func TestOpen_EncryptedWorkbook(t *testing.T) {
 	msg := strings.ToLower(err.Error())
 	if !strings.Contains(msg, "encrypt") && !strings.Contains(msg, "password") {
 		t.Fatalf("Open error %q does not mention encryption or password", err.Error())
+	}
+}
+
+// TestOpen_LegacyBinaryContainer covers the case that surprised the first
+// implementation of Open: the OLE2 Compound File Binary magic header is a
+// *container* signature, not an encryption marker. It is equally the header
+// of an unencrypted legacy pre-2007 .xls/.doc/.ppt file. A user who points
+// Open at an ordinary .xls (wrong file picked, or a renamed extension) must
+// not be told with confidence that the file is password-protected — that
+// sends them hunting for a password that doesn't exist. The error must
+// describe what was actually detected (an OLE2 container) and cover both
+// real possibilities, not assert one as fact.
+func TestOpen_LegacyBinaryContainer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.xls")
+	// The 8-byte OLE2 magic header followed by filler bytes is enough to
+	// trigger excelize's OLE2 detection path without needing a real,
+	// well-formed .xls file.
+	content := append([]byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}, make([]byte, 64)...)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := Open(path)
+	if err == nil {
+		t.Fatal("Open on legacy OLE2 binary file: want error, got nil")
+	}
+
+	msg := strings.ToLower(err.Error())
+	// It's fine, even necessary, for the message to mention password/
+	// encryption as one possibility for an encrypted-xlsx user's benefit...
+	if !strings.Contains(msg, "encrypt") && !strings.Contains(msg, "password") {
+		t.Fatalf("Open error %q does not mention encryption or password as a possibility", err.Error())
+	}
+	// ...but it must not assert that the file *is* password-protected as an
+	// established fact, since here it plainly isn't.
+	if strings.Contains(msg, "is password-protected") || strings.Contains(msg, "appears to be password-protected") {
+		t.Fatalf("Open error %q asserts password-protection as fact for a non-encrypted legacy file", err.Error())
+	}
+	// It should name the actual thing it detected, and the other real
+	// explanation, so the message is actionable either way.
+	if !strings.Contains(msg, "ole2") && !strings.Contains(msg, "legacy") {
+		t.Fatalf("Open error %q does not describe the OLE2/legacy-container ambiguity", err.Error())
 	}
 }
 
