@@ -70,9 +70,7 @@ Examples:
   exshell data.xlsx | less -S       # always plain text, pipe-friendly
   exshell --list-sheets book.xlsx
   exshell --sheet 2 book.xlsx
-
-Note: flags must come before the file argument (exshell book.xlsx --sheet 2
-is parsed as two file arguments, not one file plus a flag).
+  exshell book.xlsx --sheet 2       # flags and the file may be in any order
 `
 
 // Mode selects between the plain-text print path and the interactive
@@ -146,13 +144,32 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	fs.IntVar(&maxColWidth, "max-col-width", 0, "maximum column width (default 40)")
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
 
-	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			fmt.Fprint(stdout, usageText)
-			return 0
+	// flag.Parse alone stops at the first non-flag token and treats
+	// everything after it as positional, so "exshell data.csv --sheet 2"
+	// (file first, flags after — how most people type a command) would
+	// otherwise misparse as two file arguments instead of one file plus a
+	// flag. Parse repeatedly, peeling off one positional per pass, so
+	// flags and the file argument may appear in any order; this delegates
+	// entirely to flag's own value-vs-flag-vs-positional logic, so e.g.
+	// "--delim ';' f.csv" still consumes ';' as --delim's value rather
+	// than mistaking it for the file.
+	var positionals []string
+	rest := args
+	for {
+		if err := fs.Parse(rest); err != nil {
+			if err == flag.ErrHelp {
+				fmt.Fprint(stdout, usageText)
+				return 0
+			}
+			fmt.Fprintf(stderr, "exshell: %v\n", err)
+			return 2
 		}
-		fmt.Fprintf(stderr, "exshell: %v\n", err)
-		return 2
+		rest = fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		positionals = append(positionals, rest[0])
+		rest = rest[1:]
 	}
 
 	if showVersion {
@@ -167,17 +184,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	fileArgs := fs.Args()
-	switch len(fileArgs) {
+	switch len(positionals) {
 	case 0:
 		fmt.Fprintln(stderr, "exshell: no file argument")
 		return 2
 	case 1:
 	default:
-		fmt.Fprintf(stderr, "exshell: exactly one file argument required, got %d\n", len(fileArgs))
+		fmt.Fprintf(stderr, "exshell: exactly one file argument required, got %d\n", len(positionals))
 		return 2
 	}
-	path := fileArgs[0]
+	path := positionals[0]
 
 	var delimRune rune
 	if delim != "" {

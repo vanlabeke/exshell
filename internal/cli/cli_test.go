@@ -338,6 +338,69 @@ func TestRun_EmptyCSVExitsOneWithMessageIntact(t *testing.T) {
 	}
 }
 
+// --- flag/positional ordering ---------------------------------------------
+//
+// flag.Parse alone stops at the first non-flag token, so a naive call
+// would silently treat "exshell data.csv --list-sheets" as two file
+// arguments instead of one file plus a flag — exactly the bug these tests
+// guard against.
+
+// TestRun_BooleanFlagAfterFile pins that a boolean flag (--list-sheets)
+// placed after the file argument still takes effect, instead of being
+// swallowed as a second positional.
+func TestRun_BooleanFlagAfterFile(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "data.csv", []byte("a,b\n1,2\n"))
+
+	stdout, stderr, code := runCLI(t, path, "--list-sheets")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", code, stderr)
+	}
+	if stdout != "data.csv\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "data.csv\n")
+	}
+}
+
+// TestRun_ValueTakingFlagAfterFile pins that a value-taking flag
+// (--sheet NAME) placed after the file argument still takes effect.
+func TestRun_ValueTakingFlagAfterFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "book.xlsx")
+	buildXLSX(t, path, func(f *excelize.File) {
+		if _, err := f.NewSheet("Data"); err != nil {
+			t.Fatalf("NewSheet: %v", err)
+		}
+		f.SetCellValue("Data", "A1", "hello")
+	})
+
+	stdout, stderr, code := runCLI(t, path, "--sheet", "Data")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", code, stderr)
+	}
+	if !strings.Contains(stdout, "hello") {
+		t.Errorf("stdout = %q, want it to contain the Data sheet's content", stdout)
+	}
+}
+
+// TestRun_DelimValueNotMistakenForFile pins that "--delim ';' file.csv"
+// still parses ';' as --delim's value, not as an extra positional/the
+// file — flag.Parse already knows --delim takes a value, so the fix for
+// flags-after-file (which peels off exactly one positional per pass) must
+// not disturb that.
+func TestRun_DelimValueNotMistakenForFile(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "semi.csv", []byte("a;b;c\n1;2;3\n"))
+
+	stdout, stderr, code := runCLI(t, "--delim", ";", path)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", code, stderr)
+	}
+	want := "a  b  c\n-  -  -\n1  2  3\n"
+	if stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+}
+
 // TestRun_OLE2LegacyXLSXExitsOneWithMessageIntact pins that xlsxsrc's OLE2
 // container error — which deliberately covers both password-protection and
 // legacy .xls as possibilities, since the header alone can't distinguish
