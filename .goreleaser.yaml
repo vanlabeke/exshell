@@ -69,17 +69,28 @@ builds:
 #
 # Signing happens here rather than on the per-arch builds above because lipo
 # produces a new file, which would invalidate any earlier signature.
+# Sign AND notarize here, on the binary, before anything is archived. Apple
+# registers the signed binary's code-directory hash and Gatekeeper resolves
+# that hash online, so the notarization ticket follows the binary into every
+# tarball built from it — no published zip and no stapling required (stapling
+# only works on .app/.dmg/.pkg anyway).
+#
+# Doing it at this stage also means a rejected notarization fails the build
+# before anything is published, rather than after.
 universal_binaries:
   - id: darwin-universal
     ids:
       - darwin
     replace: true
     hooks:
-      post: ./scripts/codesign.sh "{{ .Path }}"
+      post:
+        - ./scripts/codesign.sh "{{ .Path }}"
+        - ./scripts/notarize.sh "{{ .Path }}"
 
-# Two archive sets rather than one with a format override, because a Homebrew
-# tap cannot choose between two archives covering the same OS/arch — pointing
-# the cask at `tarballs` specifically is what disambiguates it.
+# One archive per OS/arch. A second format for darwin would give the Homebrew
+# tap two candidates for the same OS/arch, which it rejects — and the zip that
+# would have justified it is unnecessary, since notarization happens on the
+# binary above.
 archives:
   - id: tarballs
     ids:
@@ -87,25 +98,6 @@ archives:
       - darwin-universal
     formats:
       - tar.gz
-    name_template: >-
-      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_
-      {{- if eq .Arch "all" }}universal{{ else }}{{ .Arch }}{{ end }}
-    files:
-      - README.md
-      - LICENSE
-
-  # macOS zip, existing solely to carry the binary to notarytool, which
-  # accepts zip/dmg/pkg but not tar.gz.
-  #
-  # Notarizing this zip also covers the identical binary inside the tar.gz:
-  # Apple registers the signed binary's code-directory hash, and Gatekeeper
-  # checks that hash online. The ticket follows the binary, not the container
-  # — which is why a bare CLI binary needs no stapling to pass.
-  - id: macos-zip
-    ids:
-      - darwin-universal
-    formats:
-      - zip
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_
       {{- if eq .Arch "all" }}universal{{ else }}{{ .Arch }}{{ end }}

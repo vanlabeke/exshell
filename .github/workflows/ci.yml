@@ -1,0 +1,39 @@
+name: ci
+
+# Guards the branch so a broken commit never gets tagged. Linux-only and
+# deliberately cheap: the release workflow is where the expensive macOS runner
+# and the full cross-compile matrix live.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: make lint
+      - run: go test ./...
+
+      # Bubble Tea runs its own goroutines, so the viewer is the package
+      # actually worth the cost of -race.
+      - run: go test -race ./internal/viewer/
+
+      # Catch a broken release config on the commit that breaks it, rather
+      # than at tag time when it is far more annoying. --snapshot needs no
+      # tag, no secrets and publishes nothing; the signing and notarization
+      # hooks no-op without credentials.
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean --skip=publish
