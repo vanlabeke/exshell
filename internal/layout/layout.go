@@ -32,6 +32,16 @@ const (
 // --max-col-width is validated at the CLI edge (rejecting anything < 1)
 // before it ever reaches Compute, so this sentinel can never collide with
 // that validation.
+//
+// Width when MaxColWidth is Unbounded reflects the column's true natural
+// width, which Compute also uses to derive Col.PadWidth (see there) —
+// R19's bound on how far one outlier cell may inflate every other row's
+// padding. Only render.Table's unconstrained branch pairs Unbounded with
+// TotalWidth == 0 today; pairing Unbounded with a TotalWidth > 0 is not a
+// combination any current caller produces and is not specified — Compute
+// guards against the pathological case (fit() would otherwise shrink one
+// cell at a time from math.MaxInt, which is an effectively infinite loop)
+// but does not promise a meaningful result for it.
 const Unbounded = math.MaxInt
 
 // Sep is the two-space column separator used by both output paths
@@ -51,10 +61,33 @@ func SepCost(n int) int {
 
 // Col describes one computed column.
 type Col struct {
-	Name    string
-	Width   int  // display cells
-	Numeric bool // right-align
+	Name string
+	// Width is the column's full display-cell width: the natural
+	// (measured) width clamped to MaxColWidth, per Compute's doc. Callers
+	// use it to decide truncation — Truncate(v, Width) is lossless exactly
+	// when no value in the column exceeds Width, which is always true
+	// except under an explicit, user-requested cap.
+	Width int
+	// PadWidth is the width to pad *other* values out to; it equals Width
+	// except when MaxColWidth is Unbounded (R19), where it is capped at
+	// a fixed bound (see padWidthBound) so a single outlier cell — one
+	// long free-text value in an otherwise narrow column — cannot inflate
+	// every other row's padding to match it. Content itself is never lost
+	// this way: a value wider than PadWidth is emitted in full by
+	// layout.PadNoTruncate, which pads short values but never truncates
+	// long ones; only that one row's later columns shift right as a
+	// result. Every caller that isn't render.Table's unconstrained path
+	// has PadWidth == Width and can ignore this field entirely.
+	PadWidth int
+	Numeric  bool // right-align
 }
+
+// padWidthBound is the ceiling on Col.PadWidth when MaxColWidth is
+// Unbounded (R19). Reusing defaultMaxColWidth's value is deliberate: it is
+// already the width a reader expects an ordinary column to top out at, so
+// the vast majority of rows render exactly as they would under the default
+// cap, and only the actual outlier row's rendering changes.
+const padWidthBound = defaultMaxColWidth
 
 // Layout is the computed set of columns for a table.
 type Layout struct{ Cols []Col }
@@ -149,10 +182,34 @@ func Compute(t table.Table, opts Options) Layout {
 			w = 1
 		}
 		numeric := nonEmpty[i] > 0 && float64(numericHits[i])/float64(nonEmpty[i]) >= 0.8
-		resultCols[i] = Col{Name: Sanitize(name), Width: w, Numeric: numeric}
+
+		// PadWidth (R19) only ever differs from Width when MaxColWidth is
+		// Unbounded: every other mode already bounds Width appropriately
+		// (the default cap, an explicit cap, or fit()'s shrink below), so
+		// padding to Width there is exactly right and PadWidth must match
+		// it exactly.
+		padWidth := w
+		if opts.MaxColWidth == Unbounded && padWidth > padWidthBound {
+			padWidth = padWidthBound
+		}
+
+		resultCols[i] = Col{Name: Sanitize(name), Width: w, PadWidth: padWidth, Numeric: numeric}
 	}
 
 	if opts.TotalWidth > 0 {
+		if opts.MaxColWidth == Unbounded {
+			// Defensive guard, not a supported combination (see Unbounded's
+			// doc): no current caller pairs Unbounded with a TotalWidth > 0,
+			// but fit() shrinks one cell at a time, and starting from
+			// math.MaxInt would make that an effectively infinite loop.
+			// Clamp down to a sane starting point first; the result for
+			// this combination is otherwise unspecified.
+			for i := range resultCols {
+				if resultCols[i].Width > defaultMaxColWidth {
+					resultCols[i].Width = defaultMaxColWidth
+				}
+			}
+		}
 		fit(resultCols, opts.TotalWidth, opts.MinColWidth)
 	}
 
@@ -163,7 +220,12 @@ func Compute(t table.Table, opts Options) Layout {
 // widths fits within totalWidth or every column has been floored at
 // minColWidth. On each step the currently-widest column shrinks by 1; ties
 // are broken by the lowest index. No map iteration is used, so the result is
-// byte-identical for a given input every time.
+// byte-identical for a given input every time. PadWidth is kept in lockstep
+// with Width throughout: every caller of fit already has PadWidth == Width
+// on entry (fit only ever runs for a finite TotalWidth, which is never
+// paired with MaxColWidth == Unbounded by any real caller — see Compute's
+// guard above), so shrinking both together preserves that equality rather
+// than leaving PadWidth stale at its pre-shrink value.
 func fit(cols []Col, totalWidth, minColWidth int) {
 	for {
 		sum := 0
@@ -191,6 +253,7 @@ func fit(cols []Col, totalWidth, minColWidth int) {
 			return
 		}
 		cols[maxIdx].Width--
+		cols[maxIdx].PadWidth = cols[maxIdx].Width
 	}
 }
 
@@ -323,6 +386,35 @@ func Pad(s string, w int, right bool) string {
 		s = Truncate(s, w)
 		sw = runewidth.StringWidth(s)
 	}
+	if sw >= w {
+		return s
+	}
+
+	padding := strings.Repeat(" ", w-sw)
+	if right {
+		return padding + s
+	}
+	return s + padding
+}
+
+// PadNoTruncate returns s padded to at least w display cells, aligned right
+// when right is true and left otherwise — but, unlike Pad, an s already at
+// or beyond w cells is returned completely unchanged rather than
+// truncated. This is R19's tool for render.Table's unconstrained (piped)
+// no-cap path: a column's PadWidth (see Col.PadWidth) bounds how far an
+// ordinary short value is padded to match its neighbors, but the rare
+// value that is itself wider than PadWidth must survive intact — it is the
+// actual file content, and R18 already settled that this path must not
+// lose bytes. The cost is visual: that one row's later columns shift
+// right, since nothing after an over-width cell can be relied on to line
+// up. Every other caller in the codebase wants truncation and should keep
+// using Pad.
+func PadNoTruncate(s string, w int, right bool) string {
+	if w < 1 {
+		return s
+	}
+
+	sw := runewidth.StringWidth(s)
 	if sw >= w {
 		return s
 	}

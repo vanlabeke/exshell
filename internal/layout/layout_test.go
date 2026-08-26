@@ -3,6 +3,7 @@ package layout
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mattn/go-runewidth"
 	"vanlabeke.dev/exshell/internal/table"
@@ -95,6 +96,87 @@ func TestComputeUnboundedSampleRowsMeasuresEveryRow(t *testing.T) {
 	l := Compute(tbl, Options{SampleRows: Unbounded, MaxColWidth: Unbounded})
 	if l.Cols[0].Width != 50 {
 		t.Fatalf("width = %d, want 50 (row 1200 must be measured)", l.Cols[0].Width)
+	}
+}
+
+// --- Compute: PadWidth (R19) ---
+
+// TestComputePadWidthEqualsWidthOutsideUnbounded pins that PadWidth is
+// never a behavior change for any mode except MaxColWidth: Unbounded —
+// every other caller (the default cap, an explicit cap, or a TotalWidth
+// fit) can keep reading Width as before and PadWidth will always agree.
+func TestComputePadWidthEqualsWidthOutsideUnbounded(t *testing.T) {
+	long := strings.Repeat("x", 100)
+	tbl := table.New("t", []string{"Col"}, [][]string{{long}})
+
+	cases := []Options{
+		{},                // default cap
+		{MaxColWidth: 10}, // explicit cap
+		{TotalWidth: 5},   // fit()
+	}
+	for _, opts := range cases {
+		l := Compute(tbl, opts)
+		if l.Cols[0].Width != l.Cols[0].PadWidth {
+			t.Errorf("opts=%+v: Width=%d, PadWidth=%d, want equal", opts, l.Cols[0].Width, l.Cols[0].PadWidth)
+		}
+	}
+}
+
+// TestComputePadWidthBoundedUnderUnbounded pins R19 itself: with
+// MaxColWidth: Unbounded, a column's Width reflects the true (uncapped)
+// natural width, but PadWidth is capped at padWidthBound (40) regardless —
+// this is the field render.Table's no-cap path uses to pad ordinary rows,
+// so a single outlier value can't inflate every row's padding to match it.
+func TestComputePadWidthBoundedUnderUnbounded(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	tbl := table.New("t", []string{"Col"}, [][]string{{long}})
+
+	l := Compute(tbl, Options{MaxColWidth: Unbounded})
+	if l.Cols[0].Width != 5000 {
+		t.Fatalf("Width = %d, want 5000 (uncapped, no data loss)", l.Cols[0].Width)
+	}
+	if l.Cols[0].PadWidth != 40 {
+		t.Fatalf("PadWidth = %d, want 40 (bounded)", l.Cols[0].PadWidth)
+	}
+}
+
+// TestComputePadWidthNotBoundedWhenWithinBound pins that PadWidth doesn't
+// artificially shrink a column that's already narrower than the bound —
+// R19 only ever caps down, never pads a short natural width up.
+func TestComputePadWidthNotBoundedWhenWithinBound(t *testing.T) {
+	tbl := table.New("t", []string{"Col"}, [][]string{{"short"}})
+	l := Compute(tbl, Options{MaxColWidth: Unbounded})
+	if l.Cols[0].PadWidth != l.Cols[0].Width {
+		t.Fatalf("PadWidth = %d, Width = %d, want equal for a column under the bound", l.Cols[0].PadWidth, l.Cols[0].Width)
+	}
+}
+
+// TestComputeUnboundedWithTotalWidthDoesNotHang is a regression test for a
+// latent (not currently reachable) bug the re-reviewer flagged: pairing
+// MaxColWidth: Unbounded with a finite TotalWidth would send fit()
+// decrementing one cell at a time from math.MaxInt — effectively an
+// infinite loop — without Compute's defensive pre-clamp. Run with a hard
+// timeout so a regression here fails the test instead of hanging the whole
+// suite.
+func TestComputeUnboundedWithTotalWidthDoesNotHang(t *testing.T) {
+	tbl := table.New("t", []string{"A", "B"}, [][]string{{"x", "y"}})
+
+	done := make(chan Layout, 1)
+	go func() {
+		done <- Compute(tbl, Options{MaxColWidth: Unbounded, TotalWidth: 10})
+	}()
+
+	select {
+	case l := <-done:
+		sum := 0
+		for _, c := range l.Cols {
+			sum += c.Width
+		}
+		if sum > 10 {
+			t.Errorf("sum of widths = %d, want <= TotalWidth (10)", sum)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Compute did not return within 2s — MaxColWidth: Unbounded paired with a finite TotalWidth is looping")
 	}
 }
 
