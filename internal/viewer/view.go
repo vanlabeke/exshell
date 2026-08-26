@@ -38,6 +38,11 @@ func (m *Model) View() tea.View {
 	b.WriteString(m.headerLine())
 	b.WriteByte('\n')
 
+	// cursorRowVals captures the cursor row's cells as they're fetched
+	// below, so footerLine can reuse them in inspect mode instead of
+	// calling table.Row (which allocates) a second time for the same row.
+	var cursorRowVals []string
+
 	vr := m.visibleRows()
 	nr := m.nRows()
 	end := m.rowOff + vr
@@ -45,11 +50,15 @@ func (m *Model) View() tea.View {
 		end = nr
 	}
 	for r := m.rowOff; r < end; r++ {
-		b.WriteString(m.dataLine(r))
+		row := m.tbl.Row(r) // fetched once; table.Table.Row allocates per call.
+		if r == m.cursorRow {
+			cursorRowVals = row
+		}
+		b.WriteString(m.dataLine(r, row))
 		b.WriteByte('\n')
 	}
 
-	b.WriteString(m.footerLine())
+	b.WriteString(m.footerLine(cursorRowVals))
 
 	v := tea.NewView(b.String())
 	v.AltScreen = true
@@ -57,17 +66,28 @@ func (m *Model) View() tea.View {
 }
 
 // tabBarLine renders the sheet-tab bar, or "" when the book has only one
-// sheet (in which case View omits the line entirely).
+// sheet (in which case View omits the line entirely). A hidden sheet
+// (SheetInfo.Visible == false) is still reachable via Tab/shift+Tab — R14:
+// exshell is an inspection tool and --sheet already reaches hidden sheets,
+// so hiding them from Tab would be inconsistent — but it must not present
+// as an equal peer of the visible ones, so its name gets a plain-text
+// " (hidden)" suffix. The suffix is baked into the string before
+// activeTabStyle is applied, so an active hidden sheet still shows both:
+// the style and the marker compose rather than cancel out.
 func (m *Model) tabBarLine() string {
 	if len(m.sheets) < 2 {
 		return ""
 	}
 	parts := make([]string, len(m.sheets))
 	for i, s := range m.sheets {
+		name := s.Name
+		if !s.Visible {
+			name += " (hidden)"
+		}
 		if s.Name == m.active {
-			parts[i] = activeTabStyle.Render(s.Name)
+			parts[i] = activeTabStyle.Render(name)
 		} else {
-			parts[i] = s.Name
+			parts[i] = name
 		}
 	}
 	return strings.Join(parts, " | ")
@@ -86,13 +106,14 @@ func (m *Model) headerLine() string {
 	return headerStyle.Render(m.formatVisibleRow(names))
 }
 
-// dataLine renders one data row, fetching it from the table exactly once,
-// with the cursor cell highlighted when it falls in this row.
-func (m *Model) dataLine(r int) string {
+// dataLine renders one data row from its already-fetched cell values (the
+// caller, View, fetches each row exactly once via table.Table.Row, which
+// allocates per call), with the cursor cell highlighted when it falls in
+// this row.
+func (m *Model) dataLine(r int, row []string) string {
 	if m.nCols() == 0 {
 		return ""
 	}
-	row := m.tbl.Row(r) // fetched once; table.Table.Row allocates per call.
 
 	end := m.visibleColEnd(m.colOff)
 	cells := make([]string, 0, end-m.colOff)
@@ -155,7 +176,13 @@ func (m *Model) rowRangeText() string {
 // otherwise the file/sheet name, row position, and current column name (or,
 // in inspect mode, the full untruncated value of the current cell instead
 // of the column name) plus any transient status message.
-func (m *Model) footerLine() string {
+//
+// cursorRow is the cursor row's cells if View already fetched them this
+// pass (it always has, unless the terminal is so short that no data rows
+// render at all); reusing it avoids a second table.Row allocation for a
+// row View just fetched. When nil, the rare degenerate case is handled by
+// fetching it directly.
+func (m *Model) footerLine(cursorRow []string) string {
 	if m.searchActive {
 		return "/" + m.searchInput
 	}
@@ -168,7 +195,10 @@ func (m *Model) footerLine() string {
 	if m.inspect {
 		val := ""
 		if m.nRows() > 0 && m.nCols() > 0 {
-			row := m.tbl.Row(m.cursorRow)
+			row := cursorRow
+			if row == nil {
+				row = m.tbl.Row(m.cursorRow)
+			}
 			val = row[m.cursorCol]
 		}
 		return fmt.Sprintf("%s | %s | %s", sheet, m.rowRangeText(), val)

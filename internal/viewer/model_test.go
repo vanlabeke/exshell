@@ -185,14 +185,16 @@ func TestInspectMode_TogglesAndShowsFullValue(t *testing.T) {
 		t.Fatalf("Enter should toggle inspect on")
 	}
 
-	footer := m.footerLine()
+	// nil exercises footerLine's fallback fetch path (View's normal call
+	// passes the row it already fetched; here there is none).
+	footer := m.footerLine(nil)
 	if !strings.Contains(footer, longVal) {
 		t.Fatalf("inspect footer = %q, want it to contain full value %q", footer, longVal)
 	}
 
 	// The rendered data cell, by contrast, must be truncated (narrower than
 	// the full value).
-	dataCell := m.dataLine(0)
+	dataCell := m.dataLine(0, m.tbl.Row(0))
 	if strings.Contains(dataCell, longVal) {
 		t.Fatalf("data cell should be truncated, but contains the full value: %q", dataCell)
 	}

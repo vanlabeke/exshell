@@ -98,6 +98,57 @@ func TestSheetSwitching_CachesLoadedTables(t *testing.T) {
 	}
 }
 
+// hiddenSheetBook is multiBook with sheet "b" marked hidden, for testing
+// that the tab bar visually distinguishes hidden sheets from visible ones
+// (R14: hidden sheets stay reachable via Tab, but must not present as an
+// equal peer of the visible ones).
+func hiddenSheetBook() *fakeBook {
+	bk := multiBook()
+	bk.sheets = []table.SheetInfo{
+		{Name: "a", Visible: true},
+		{Name: "b", Visible: false},
+		{Name: "c", Visible: true},
+	}
+	return bk
+}
+
+func TestTabBar_HiddenSheetIsMarked(t *testing.T) {
+	bk := hiddenSheetBook()
+	m := NewModel(bk, "a", 80, 10, Options{})
+
+	bar := m.tabBarLine()
+	if !strings.Contains(bar, "b (hidden)") {
+		t.Fatalf("tab bar = %q, want the hidden sheet marked as such", bar)
+	}
+	if strings.Contains(bar, "a (hidden)") || strings.Contains(bar, "c (hidden)") {
+		t.Fatalf("tab bar = %q, visible sheets a/c must not be marked hidden", bar)
+	}
+}
+
+func TestTabBar_HiddenActiveSheetShowsBothMarkerAndActiveStyling(t *testing.T) {
+	bk := hiddenSheetBook()
+	m := NewModel(bk, "a", 80, 10, Options{})
+
+	barBeforeActive := m.tabBarLine() // "b" rendered hidden but not active
+
+	sendKey(&m, namedKey(tea.KeyTab, 0)) // a -> b: hidden sheet becomes active
+	if m.active != "b" {
+		t.Fatalf("active = %q, want b", m.active)
+	}
+
+	barActive := m.tabBarLine()
+	if !strings.Contains(barActive, "(hidden)") {
+		t.Fatalf("active-hidden tab bar = %q, hidden marker must survive becoming active", barActive)
+	}
+	// The active rendering must actually differ from the inactive one (the
+	// active-tab style is applied on top of, not instead of, the marker) —
+	// otherwise the marker and the active styling would be indistinguishable
+	// from a hidden-but-inactive sheet never being selected at all.
+	if barActive == barBeforeActive {
+		t.Fatalf("tab bar did not change when the hidden sheet became active: %q", barActive)
+	}
+}
+
 // countingTableBook wraps a fakeBook to count Table() calls for one sheet
 // name, so the cache requirement ("switching back is instant") is verifiable
 // rather than assumed.
