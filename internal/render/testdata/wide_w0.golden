@@ -1,5 +1,5 @@
 id  name      city               email                         bio
---  --------  -----------------  ----------------------------  -----------------------------------------------------------------------------
+--  --------  -----------------  ----------------------------  ----------------------------------------
  1  Alice     San Francisco, CA  alice.wonderland@example.com  Loves gardening and long walks on the beach every single weekend without fail
  2  東京太郎  Tokyo, Japan       taro@example.co.jp            N/A
  3  Bob 🎉    New York City, NY  bob@example.com               Short bio

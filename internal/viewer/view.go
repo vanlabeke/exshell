@@ -121,7 +121,7 @@ func (m *Model) dataLine(r int, row []string) string {
 		c := m.lay.Cols[i]
 		v := layout.Sanitize(row[i])
 		var cell string
-		if i == len(m.lay.Cols)-1 {
+		if i == len(m.lay.Cols)-1 && !c.Numeric {
 			cell = layout.Truncate(v, c.Width)
 		} else {
 			cell = layout.Pad(v, c.Width, c.Numeric)
@@ -138,15 +138,19 @@ func (m *Model) dataLine(r int, row []string) string {
 // across the currently visible column range, following render.go's
 // convention: every column is padded to its width and aligned per
 // c.Numeric, except when the visible range reaches the table's true last
-// column, which is only ever truncated (regardless of c.Numeric) so the
-// line never carries trailing whitespace.
+// column and that column is non-numeric, in which case it is only
+// truncated, never padded. A numeric last column is still right-aligned
+// via layout.Pad: unlike render.go's print path, the viewer does not chase
+// a "no trailing whitespace" invariant on the assembled line (there is no
+// grep/pipe consumer of a TUI frame), so there is nothing to trade
+// alignment away for here.
 func (m *Model) formatVisibleRow(values []string) string {
 	end := m.visibleColEnd(m.colOff)
 	cells := make([]string, 0, end-m.colOff)
 	for i := m.colOff; i < end; i++ {
 		c := m.lay.Cols[i]
 		v := layout.Sanitize(values[i])
-		if i == len(m.lay.Cols)-1 {
+		if i == len(m.lay.Cols)-1 && !c.Numeric {
 			cells = append(cells, layout.Truncate(v, c.Width))
 			continue
 		}

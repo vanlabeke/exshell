@@ -157,13 +157,17 @@ func TestTable_NumericColumnRightAligned(t *testing.T) {
 	}
 }
 
-// TestTable_NumericLastColumnEmptyNoTrailingWhitespace pins Minor 1: a
-// numeric last column (right-aligned, so Pad prepends spaces) with an empty
-// value used to render as nothing but the padding — i.e. trailing
-// whitespace on that line — because the "last column is never padded"
-// exception only fired for non-numeric last columns. No existing golden
-// fixture had an empty final cell, so render_test.go's own
-// assertNoTrailingWhitespaceOrMissingNewline never actually caught it.
+// TestTable_NumericLastColumnEmptyNoTrailingWhitespace pins Minor 1's
+// corrected fix (NEW-1): a numeric last column stays right-aligned via
+// layout.Pad even when it is the last column — Ann's "500" must be padded
+// out to the column's full width, not left flush against the separator —
+// while an empty value on that same column (Bob's row) must still produce
+// no trailing whitespace at all. The "no trailing whitespace" invariant is
+// enforced once, robustly, by writeRow's whole-line right-trim, not by
+// refusing to align numeric columns. No existing golden fixture had an
+// empty final cell, so render_test.go's own
+// assertNoTrailingWhitespaceOrMissingNewline never actually caught the
+// original bug.
 func TestTable_NumericLastColumnEmptyNoTrailingWhitespace(t *testing.T) {
 	tbl := table.New("t.csv", []string{"name", "dept", "bonus"}, [][]string{
 		{"Bob", "Sales", ""},
@@ -176,14 +180,57 @@ func TestTable_NumericLastColumnEmptyNoTrailingWhitespace(t *testing.T) {
 	assertNoTrailingWhitespaceOrMissingNewline(t, buf.Bytes())
 
 	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
-	// bonus is numeric (500 is the only non-empty sample, right-aligned),
-	// last column, empty on Bob's row: must render as literally nothing
-	// after the separator, not as right-alignment padding.
-	want := []string{"name  dept   bonus", "----  -----  -----", "Bob   Sales", "Ann   Eng    500"}
+	// bonus is numeric (500 is the only non-empty sample), width 5
+	// (from the "bonus" header). Ann's "500" is right-aligned (2 leading
+	// pad cells); Bob's empty value produces nothing at all, once the
+	// whole line is right-trimmed.
+	want := []string{"name  dept   bonus", "----  -----  -----", "Bob   Sales", "Ann   Eng      500"}
 	for i, w := range want {
 		if lines[i] != w {
 			t.Errorf("line %d: got %q, want %q", i, lines[i], w)
 		}
+	}
+}
+
+// TestTable_SecondToLastCellEmptyNoTrailingWhitespace pins NEW-1's other
+// reported shape: an empty *non-last* cell's own left-aligned padding
+// becomes trailing whitespace once the genuinely-last cell (also empty
+// here) is trimmed away — a shape the original Minor 1 fix (which only
+// ever looked at the last cell) could not reach at all.
+func TestTable_SecondToLastCellEmptyNoTrailingWhitespace(t *testing.T) {
+	tbl := table.New("t.csv", []string{"name", "dept", "bonus"}, [][]string{
+		{"Bob", "", ""},
+		{"Ann", "Eng", "500"},
+	})
+	var buf bytes.Buffer
+	if err := Table(&buf, tbl, Options{Header: true}); err != nil {
+		t.Fatalf("Table: %v", err)
+	}
+	assertNoTrailingWhitespaceOrMissingNewline(t, buf.Bytes())
+
+	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+	if lines[2] != "Bob" {
+		t.Errorf("line 2 = %q, want %q (dept and bonus both empty, trimmed away entirely)", lines[2], "Bob")
+	}
+}
+
+// TestTable_AllEmptyRowNoTrailingWhitespace pins the most degenerate shape
+// in NEW-1: every cell in a row is empty. The line must still end exactly
+// at the newline, with no whitespace at all.
+func TestTable_AllEmptyRowNoTrailingWhitespace(t *testing.T) {
+	tbl := table.New("t.csv", []string{"a", "b", "c"}, [][]string{
+		{"", "", ""},
+		{"x", "y", "z"},
+	})
+	var buf bytes.Buffer
+	if err := Table(&buf, tbl, Options{Header: true}); err != nil {
+		t.Fatalf("Table: %v", err)
+	}
+	assertNoTrailingWhitespaceOrMissingNewline(t, buf.Bytes())
+
+	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+	if lines[2] != "" {
+		t.Errorf("all-empty data row = %q, want an empty line", lines[2])
 	}
 }
 
@@ -271,6 +318,101 @@ func TestTable_TTYConstrainedStillSamplesAndCaps(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), strings.Repeat("z", 100)) {
 		t.Fatalf("TTY-constrained path picked up a value beyond SampleRows/MaxColWidth: %q", buf.String())
+	}
+}
+
+// --- R19 (NEW-2): the unconstrained no-cap path must not let one outlier
+// cell inflate every other row's padding ---
+
+// TestTable_UnconstrainedLongValueSurvivesWithoutInflatingOtherRows pins
+// both halves of R19 at once: a single very long value in an otherwise
+// narrow column must (a) still come through completely intact — R18's
+// no-data-loss guarantee, unaffected by R19 — and (b) not force every
+// other (short) row's rendering to widen to match it. Without the R19
+// bound, every one of the 999 short rows would be padded out to the
+// outlier's width; with it, only the outlier row's line is long.
+//
+// The outlier deliberately sits in "message", the *first* (non-last)
+// column, with a trivial "status" column after it: the last column is
+// always Truncate-only (see formatRow) and was never vulnerable to
+// cross-row padding inflation even before R19, so putting the outlier
+// there would test nothing — the amplification bug lives specifically in
+// the Pad path a non-last (or numeric-last) column takes.
+func TestTable_UnconstrainedLongValueSurvivesWithoutInflatingOtherRows(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+
+	rows := make([][]string, 1000)
+	for i := range rows {
+		rows[i] = []string{"short", "ok"}
+	}
+	rows[500] = []string{long, "ok"}
+	tbl := table.New("t.csv", []string{"message", "status"}, rows)
+
+	var buf bytes.Buffer
+	if err := Table(&buf, tbl, Options{Header: true, Width: 0}); err != nil {
+		t.Fatalf("Table: %v", err)
+	}
+	out := buf.String()
+
+	// (a) content survives, untruncated and grep-able.
+	if !strings.Contains(out, long) {
+		t.Fatalf("the 5000-char outlier value did not survive intact")
+	}
+
+	// (b) an ordinary short row is not inflated to match the outlier: its
+	// line length must stay in the same ballpark as its own content, not
+	// balloon to ~5000+ characters.
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	for i, line := range lines {
+		if strings.Contains(line, long) {
+			continue // the outlier row itself is expected to be long
+		}
+		if len(line) > 100 {
+			t.Fatalf("line %d (not the outlier row) is %d bytes, want well under 100 — an ordinary row was inflated to match the outlier: %q", i, len(line), line)
+		}
+	}
+}
+
+// TestTable_UnconstrainedOutputStaysProportionateToInput pins the
+// amplification regression the re-reviewer measured directly: 51,800 bytes
+// in producing 40,086,929 bytes out (774x) on a real shape. This
+// reconstructs that shape at a smaller but still decisive scale — many
+// short rows plus one long outlier, in a non-last column (see the comment
+// on TestTable_UnconstrainedLongValueSurvivesWithoutInflatingOtherRows for
+// why that placement matters) — and asserts total output stays within a
+// small constant multiple of input size, not proportional to (row count) x
+// (outlier width).
+func TestTable_UnconstrainedOutputStaysProportionateToInput(t *testing.T) {
+	const nRows = 2000
+	const outlierWidth = 2000
+
+	rows := make([][]string, nRows)
+	inputBytes := 0
+	for i := range rows {
+		rows[i] = []string{"short-value", "z"}
+		inputBytes += len(rows[i][0]) + len(rows[i][1]) + 1 // +1 for a CSV newline, approximately
+	}
+	rows[nRows/2] = []string{strings.Repeat("y", outlierWidth), "z"}
+	inputBytes += outlierWidth
+	tbl := table.New("t.csv", []string{"col", "tail"}, rows)
+
+	var buf bytes.Buffer
+	if err := Table(&buf, tbl, Options{Header: true, Width: 0}); err != nil {
+		t.Fatalf("Table: %v", err)
+	}
+	outputBytes := buf.Len()
+
+	// Without the R19 bound, every one of nRows rows pads "col" to
+	// ~outlierWidth, so output would be roughly nRows*outlierWidth ~=
+	// 4,000,000 bytes here. With the bound, output is roughly
+	// nRows*padWidthBound plus the one outlier row's real length:
+	// comfortably under nRows*100.
+	if maxReasonable := nRows * 100; outputBytes > maxReasonable {
+		t.Fatalf("output is %d bytes for %d bytes of input (nRows=%d, one outlier of width %d) — want under %d; padding was not bounded",
+			outputBytes, inputBytes, nRows, outlierWidth, maxReasonable)
+	}
+	if !strings.Contains(buf.String(), strings.Repeat("y", outlierWidth)) {
+		t.Fatalf("the outlier value did not survive intact")
 	}
 }
 

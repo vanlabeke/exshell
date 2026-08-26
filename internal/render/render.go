@@ -32,32 +32,47 @@ type Options struct {
 // Cells are joined by two spaces. When opts.Header is true, the header row
 // is followed by a rule line of '-' runs, one per column, matching that
 // column's width. Numeric columns are right-aligned; everything else is
-// left-aligned, via layout.Pad. Every line ends with a newline, and the
-// final column of every line is never right-padded, so lines never carry
-// trailing whitespace.
+// left-aligned, via layout.Pad. Every line ends with a newline, and no line
+// ever carries trailing whitespace — writeRow right-trims the fully
+// assembled line, which holds regardless of which column's padding would
+// otherwise have produced it.
 func Table(w io.Writer, t table.Table, opts Options) error {
 	cols := t.Cols()
 	n := len(cols)
+
+	// noCap marks render.Table's one unconstrained-no-cap case: unbounded
+	// output (piped or redirected, opts.Width == 0) with no explicit
+	// --max-col-width. It gates two things together: which layout.Options
+	// Compute receives below, and which pad primitive formatRow uses for
+	// every row (Pad's destructive truncation is wrong here; see
+	// PadNoTruncate).
+	noCap := opts.Width <= 0 && opts.MaxColWidth == 0
 
 	lopts := layout.Options{MaxColWidth: opts.MaxColWidth}
 	switch {
 	case opts.Width > 0:
 		lopts.TotalWidth = opts.Width - layout.SepCost(n)
-	case opts.MaxColWidth == 0:
-		// Unconstrained output (piped or redirected) with no explicit
-		// --max-col-width: controller ruling R18 — exshell must not lose
-		// bytes on the `exshell foo.csv | grep ...` path README.md
-		// advertises, so measure every row and drop the default 40-cell
-		// cap. An explicitly user-supplied --max-col-width (opts.MaxColWidth
-		// > 0, validated >= 1 at the CLI edge) is authoritative and still
-		// truncates here exactly as it does everywhere else.
+	case noCap:
+		// Controller ruling R18 — exshell must not lose bytes on the
+		// `exshell foo.csv | grep ...` path README.md advertises, so
+		// measure every row and drop the default 40-cell cap. An
+		// explicitly user-supplied --max-col-width (opts.MaxColWidth > 0,
+		// validated >= 1 at the CLI edge) is authoritative and still
+		// truncates here exactly as it does everywhere else — it skips
+		// this branch entirely.
+		//
+		// R19 — uncapping Width alone would let one outlier cell inflate
+		// every other row's padding to match it (measured: 774x on a real
+		// shape). Col.PadWidth stays bounded regardless, and formatRow
+		// below uses it (via PadNoTruncate) instead of Width for every
+		// value that isn't the rare over-width one.
 		lopts.MaxColWidth = layout.Unbounded
 		lopts.SampleRows = layout.Unbounded
 	}
 	lay := layout.Compute(t, lopts)
 
 	if opts.Header {
-		if err := writeRow(w, formatRow(cols, lay)); err != nil {
+		if err := writeRow(w, formatRow(cols, lay, noCap)); err != nil {
 			return err
 		}
 		if err := writeRow(w, ruleRow(lay)); err != nil {
@@ -73,7 +88,7 @@ func Table(w io.Writer, t table.Table, opts Options) error {
 		// Fetch the row once; table.Table.Row allocates a fresh copy on
 		// every call, and we need each cell exactly once here.
 		row := t.Row(r)
-		if err := writeRow(w, formatRow(row, lay)); err != nil {
+		if err := writeRow(w, formatRow(row, lay, noCap)); err != nil {
 			return err
 		}
 	}
@@ -85,17 +100,32 @@ func Table(w io.Writer, t table.Table, opts Options) error {
 // sanitized (see layout.Sanitize) before formatting, so what is measured
 // and what is emitted always agree. Right-aligned numeric columns are
 // padded on the left, everything else on the right — except the final
-// column, which is only ever truncated, never padded (regardless of
-// Numeric: a numeric column padded on the left produces nothing but
-// trailing spaces when its value is empty, which is exactly the invariant
-// this exception protects), so the line never ends in trailing whitespace.
-func formatRow(values []string, lay layout.Layout) []string {
+// column, when it is not numeric, which is only ever truncated, never
+// padded, so a left-aligned value never grows trailing spaces of its own. A
+// numeric last column still needs padding's right-alignment (padding on
+// the left) to look right when stacked against other rows' values of
+// different lengths; the case where an empty value turns that padding into
+// a cell of nothing but spaces is handled once, robustly, by writeRow's
+// final trim — not by refusing to align numeric columns at all.
+//
+// noCap selects which pad primitive backs that alignment (R19): when true
+// (render.Table's unconstrained, no-explicit-cap path), every Pad call
+// below becomes a PadNoTruncate call against c.PadWidth instead of
+// c.Width, so an ordinary value is padded to the same bounded width it
+// would get under the default cap, while a rare over-width value is still
+// emitted in full rather than truncated. When false, behavior is unchanged
+// from before R19: c.Width and Pad's normal (truncating) behavior.
+func formatRow(values []string, lay layout.Layout, noCap bool) []string {
 	n := len(lay.Cols)
 	cells := make([]string, n)
 	for i, c := range lay.Cols {
 		v := layout.Sanitize(values[i])
-		if i == n-1 {
+		if i == n-1 && !c.Numeric {
 			cells[i] = layout.Truncate(v, c.Width)
+			continue
+		}
+		if noCap {
+			cells[i] = layout.PadNoTruncate(v, c.PadWidth, c.Numeric)
 			continue
 		}
 		cells[i] = layout.Pad(v, c.Width, c.Numeric)
@@ -104,27 +134,34 @@ func formatRow(values []string, lay layout.Layout) []string {
 }
 
 // ruleRow renders the '-' rule line under the header: one run per column,
-// exactly matching that column's width. Dashes are visible content, not
+// matching that column's PadWidth (equal to Width outside R19's
+// unconstrained-no-cap path, so this is a no-op change there) rather than
+// the possibly-much-larger Width, so the rule line under an outlier column
+// stays a sane length instead of stretching to match the one wide row that
+// PadWidth deliberately doesn't pad to. Dashes are visible content, not
 // padding, so the last-column trailing-whitespace exception does not apply
 // here.
 func ruleRow(lay layout.Layout) []string {
 	cells := make([]string, len(lay.Cols))
 	for i, c := range lay.Cols {
-		cells[i] = strings.Repeat("-", c.Width)
+		cells[i] = strings.Repeat("-", c.PadWidth)
 	}
 	return cells
 }
 
 // writeRow joins cells with the shared column separator and a trailing
-// newline. When the final cell is empty (formatRow's last-column exception
-// produces exactly that for an empty value, never padding), its preceding
-// separator is dropped too — strings.Join alone would still place a
-// separator right before an empty final element, which is trailing
-// whitespace by another name.
+// newline, right-trimming the assembled line before writing. This is the
+// single place the "no trailing whitespace" invariant is actually
+// enforced, and it holds regardless of *which* cell produced the trailing
+// spaces: an empty numeric last cell (all padding, per formatRow), an
+// empty non-last cell whose own left-aligned padding becomes trailing once
+// everything after it is empty too, an all-empty row, or a value that
+// itself ends in a space or a tab (tabs sanitize to a space — see
+// layout.Sanitize). Trimming the fully-joined line is a no-op on the rule
+// row (which always ends in '-') and on any line that already ends in
+// visible content.
 func writeRow(w io.Writer, cells []string) error {
-	if n := len(cells); n > 0 && cells[n-1] == "" {
-		cells = cells[:n-1]
-	}
-	_, err := io.WriteString(w, strings.Join(cells, layout.Sep)+"\n")
+	line := strings.TrimRight(strings.Join(cells, layout.Sep), " ")
+	_, err := io.WriteString(w, line+"\n")
 	return err
 }
