@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 
@@ -95,9 +96,16 @@ var zipMagic = []byte{'P', 'K', 0x03, 0x04}
 //  1. forcePrint always wins (even over forceInteractive).
 //  2. forceInteractive wins over everything else.
 //  3. A non-TTY destination (piped or redirected) is never a TUI.
-//  4. A TTY that fits stays in scrollback: needW <= termW && needH <=
+//  4. A TTY whose size could not be measured (termW <= 0 || termH <= 0 —
+//     term.GetSize failed, or genuinely reported a 0x0 window, both of
+//     which happen in the wild: `script`, some pty-allocating CI runners,
+//     `ssh -t` and container setups, editor-embedded terminals mid-startup)
+//     is a reason to print, not to seize the screen: seizing it on a size
+//     we can't trust is what used to hang the process. Print degrades
+//     gracefully; the viewer does not.
+//  5. A TTY that fits stays in scrollback: needW <= termW && needH <=
 //     termH-1 (the -1 leaves a line for the shell prompt).
-//  5. Otherwise, the interactive viewer.
+//  6. Otherwise, the interactive viewer.
 func chooseMode(forcePrint, forceInteractive, isTTY bool, termW, termH, needW, needH int) Mode {
 	switch {
 	case forcePrint:
@@ -105,6 +113,8 @@ func chooseMode(forcePrint, forceInteractive, isTTY bool, termW, termH, needW, n
 	case forceInteractive:
 		return ModeViewer
 	case !isTTY:
+		return ModePrint
+	case termW <= 0 || termH <= 0:
 		return ModePrint
 	case needW <= termW && needH <= termH-1:
 		return ModePrint
@@ -184,6 +194,31 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	// maxColWidth's zero value is ambiguous by construction (IntVar's
+	// default and a literal "--max-col-width 0" both parse to 0), so
+	// fs.Visit — not the value alone — is what tells "not supplied" apart
+	// from "supplied 0". That distinction matters twice: here, only an
+	// explicitly supplied value is validated (0 unsupplied is not a user
+	// error, it means "let layout apply its own default"); and downstream,
+	// render.Table treats an unsupplied maxColWidth (still 0 past this
+	// point) as license to drop the default cap on unconstrained output —
+	// see I1/R18 in render.go. A supplied value below 1 is rejected here as
+	// a usage error rather than reaching layout.Compute at all: layout
+	// guards its own Width>=1 invariant defensively regardless, but a
+	// negative or zero cap is never something the user meant, so it should
+	// never render a blank grid or come within a mile of render.go's
+	// strings.Repeat panic.
+	var maxColWidthSet bool
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "max-col-width" {
+			maxColWidthSet = true
+		}
+	})
+	if maxColWidthSet && maxColWidth < 1 {
+		fmt.Fprintf(stderr, "exshell: --max-col-width must be at least 1, got %d\n", maxColWidth)
+		return 2
+	}
+
 	switch len(positionals) {
 	case 0:
 		fmt.Fprintln(stderr, "exshell: no file argument")
@@ -203,6 +238,17 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		delimRune = runes[0]
+		// encoding/csv rejects these four runes as a Comma value (they
+		// collide with quoting, line-ending, or invalid-rune handling
+		// inside the reader itself). Reject them here instead of letting
+		// csv.Reader do it: that failure would otherwise surface as a
+		// runtime error carrying a bare "csv: ..." prefix — a usage
+		// mistake wearing a runtime-error exit code.
+		switch delimRune {
+		case '"', '\r', '\n', utf8.RuneError:
+			fmt.Fprintf(stderr, "exshell: --delim %q is not a valid CSV delimiter\n", delim)
+			return 2
+		}
 	}
 
 	bk, closeBook, err := openBook(path, csvsrc.Options{
@@ -242,6 +288,20 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// A table with zero columns has nothing to render, so an empty grid at
+	// exit 0 is worse than failing loudly (R6) — indistinguishable from
+	// success. csvsrc already enforces this at load time for its own
+	// zero-byte-file case with a more specific "file is empty" message, so
+	// it never reaches here with zero columns; this check exists for the
+	// case that does: an empty xlsx sheet, which xlsxsrc legitimately
+	// returns as a valid, columnless table.New(name, nil, nil) rather than
+	// an error, since "empty sheet" isn't itself invalid the way an
+	// unreadable file is.
+	if len(tbl.Cols()) == 0 {
+		fmt.Fprintf(stderr, "exshell: %s: sheet %q has no columns\n", path, targetName)
+		return 1
+	}
+
 	isTTY, termW, termH := termInfo(stdout)
 	needW, needH := renderNeeds(tbl, maxColWidth)
 
@@ -249,7 +309,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	switch mode {
 	case ModeViewer:
-		if err := viewer.Run(bk, targetName, viewer.Options{MaxColWidth: maxColWidth}); err != nil {
+		if err := viewer.Run(bk, targetName, stdout, viewer.Options{MaxColWidth: maxColWidth}); err != nil {
 			fmt.Fprintf(stderr, "exshell: %v\n", err)
 			return 1
 		}
@@ -279,16 +339,15 @@ func renderNeeds(t table.Table, maxColWidth int) (needW, needH int) {
 	for _, c := range lay.Cols {
 		sum += c.Width
 	}
-	sep := 0
-	if n > 1 {
-		sep = 2 * (n - 1)
-	}
-	return sum + sep, t.NRows() + 2
+	return sum + layout.SepCost(n), t.NRows() + 2
 }
 
 // termInfo reports whether stdout is a terminal, and its size if so. It is
-// the one place that touches syscalls/global terminal state, kept small and
-// separate so chooseMode itself stays pure and unit-testable.
+// the one place that touches syscalls/global terminal state; the mapping
+// from a raw term.GetSize result to (isTTY, width, height) is factored out
+// into termSizeResult below, kept pure and separate, so it — and therefore
+// the case chooseMode needs (a real but unmeasurable terminal) — is
+// directly unit-testable without a syscall in sight.
 func termInfo(stdout io.Writer) (isTTY bool, width, height int) {
 	f, ok := stdout.(*os.File)
 	if !ok {
@@ -299,7 +358,18 @@ func termInfo(stdout io.Writer) (isTTY bool, width, height int) {
 		return false, 0, 0
 	}
 	w, h, err := term.GetSize(fd)
-	if err != nil {
+	return termSizeResult(err, w, h)
+}
+
+// termSizeResult maps the raw result of term.GetSize on a file already
+// confirmed to be a terminal into (isTTY, width, height); isTTY is always
+// true here. A GetSize error is treated identically to a genuine 0x0
+// result — both leave the terminal's size unmeasurable, which is exactly
+// the case chooseMode's termW<=0||termH<=0 branch exists to catch, so both
+// must map to the same (0, 0) rather than an error leaking through with
+// stale or undefined w/h values.
+func termSizeResult(getSizeErr error, w, h int) (isTTY bool, width, height int) {
+	if getSizeErr != nil {
 		return true, 0, 0
 	}
 	return true, w, h

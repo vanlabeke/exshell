@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,17 @@ func TestChooseMode(t *testing.T) {
 		{"tty, too wide and too tall", false, false, true, 80, 24, 200, 200, ModeViewer},
 		{"tty, needH exactly termH (needs the -1 margin)", false, false, true, 80, 24, 80, 24, ModeViewer},
 		{"tty, needH termH-1 fits", false, false, true, 80, 24, 80, 23, ModePrint},
+		// C1: an unmeasurable terminal (GetSize failed, or genuinely
+		// reported 0x0 — the `script`/pty-without-winsize repro from the
+		// brief) must never fall through to the viewer, even though
+		// needW<=0 or needH<=-1 is never true for a real table, which is
+		// exactly what let the original bug slip through this matrix
+		// undetected: every prior case ran at termW=80, termH=24, so the
+		// one boundary that mattered was never exercised.
+		{"tty, unmeasurable 0x0, no force", false, false, true, 0, 0, 12, 3, ModePrint},
+		{"tty, unmeasurable termW=0 only", false, false, true, 0, 24, 12, 3, ModePrint},
+		{"tty, unmeasurable termH=0 only", false, false, true, 80, 0, 12, 3, ModePrint},
+		{"tty, unmeasurable negative termH", false, false, true, 80, -1, 12, 3, ModePrint},
 	}
 
 	for _, c := range cases {
@@ -42,6 +54,35 @@ func TestChooseMode(t *testing.T) {
 			if got != c.want {
 				t.Errorf("chooseMode(%v,%v,%v,%d,%d,%d,%d) = %v, want %v",
 					c.forcePrint, c.forceInteractive, c.isTTY, c.termW, c.termH, c.needW, c.needH, got, c.want)
+			}
+		})
+	}
+}
+
+// --- termSizeResult: the pure (getSizeErr, w, h) -> (isTTY, w, h) mapping,
+// factored out of termInfo specifically so this case is unit-testable
+// without a real terminal file descriptor. ---------------------------
+
+func TestTermSizeResult(t *testing.T) {
+	boom := fmt.Errorf("boom")
+	cases := []struct {
+		name         string
+		err          error
+		w, h         int
+		wantIsTTY    bool
+		wantW, wantH int
+	}{
+		{"success reports real dimensions", nil, 80, 24, true, 80, 24},
+		{"success reporting a genuine 0x0 window is passed through as-is", nil, 0, 0, true, 0, 0},
+		{"GetSize error maps to isTTY true, 0x0", boom, 0, 0, true, 0, 0},
+		{"GetSize error discards whatever stale w/h it returned", boom, 999, 999, true, 0, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotTTY, gotW, gotH := termSizeResult(c.err, c.w, c.h)
+			if gotTTY != c.wantIsTTY || gotW != c.wantW || gotH != c.wantH {
+				t.Errorf("termSizeResult(%v, %d, %d) = (%v,%d,%d), want (%v,%d,%d)",
+					c.err, c.w, c.h, gotTTY, gotW, gotH, c.wantIsTTY, c.wantW, c.wantH)
 			}
 		})
 	}
@@ -405,6 +446,139 @@ func TestRun_DelimValueNotMistakenForFile(t *testing.T) {
 // container error — which deliberately covers both password-protection and
 // legacy .xls as possibilities, since the header alone can't distinguish
 // them — surfaces to the user verbatim (exit 1, message on stderr).
+// --- C2: --max-col-width validation --------------------------------------
+
+// TestRun_NegativeMaxColWidthExitsTwo pins C2's repro: a negative
+// --max-col-width used to panic (strings.Repeat with a negative count)
+// after already writing a garbage header line; it must instead be a clean
+// usage error, with nothing written to stdout.
+func TestRun_NegativeMaxColWidthExitsTwo(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "t.csv", []byte("a,b\n1,2\n"))
+
+	stdout, stderr, code := runCLI(t, "--max-col-width", "-1", path)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (stdout=%q stderr=%q)", code, stdout, stderr)
+	}
+	if !strings.HasPrefix(stderr, "exshell: ") {
+		t.Errorf("stderr = %q, want it to start with %q", stderr, "exshell: ")
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty (no garbage header line written before the error)", stdout)
+	}
+}
+
+// TestRun_ExplicitZeroMaxColWidthExitsTwo pins that an explicit
+// "--max-col-width 0" is rejected exactly like a negative value, not
+// silently treated as "unset" — the flag package can't tell those apart by
+// value alone, so Run must use fs.Visit to tell them apart.
+func TestRun_ExplicitZeroMaxColWidthExitsTwo(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "t.csv", []byte("a,b\n1,2\n"))
+
+	stdout, stderr, code := runCLI(t, "--max-col-width", "0", path)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (stdout=%q stderr=%q)", code, stdout, stderr)
+	}
+	if !strings.HasPrefix(stderr, "exshell: ") {
+		t.Errorf("stderr = %q, want it to start with %q", stderr, "exshell: ")
+	}
+}
+
+// TestRun_UnsetMaxColWidthStillDefaults pins that simply not passing
+// --max-col-width at all (the value that also parses to 0) is not a usage
+// error: it must still print normally, using layout's default cap.
+func TestRun_UnsetMaxColWidthStillDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "t.csv", []byte("a,b\n1,2\n"))
+
+	stdout, stderr, code := runCLI(t, path)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", code, stderr)
+	}
+	if stdout == "" {
+		t.Errorf("stdout empty, want the printed table")
+	}
+}
+
+// TestRun_PositiveMaxColWidthStillWorks pins that a valid explicit cap is
+// unaffected by the new validation.
+func TestRun_PositiveMaxColWidthStillWorks(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "t.csv", []byte("label\nthis value is much longer than five cells\n"))
+
+	stdout, stderr, code := runCLI(t, "--max-col-width", "5", path)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", code, stderr)
+	}
+	if !strings.Contains(stdout, "this…") {
+		t.Errorf("stdout = %q, want the value truncated to 5 cells", stdout)
+	}
+}
+
+// --- Minor 4: an invalid --delim is a usage error, not a leaked "csv:"
+// runtime error --------------------------------------------------------
+
+func TestRun_InvalidDelimQuoteExitsTwo(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "t.csv", []byte("a,b\n1,2\n"))
+
+	stdout, stderr, code := runCLI(t, "--delim", `"`, path)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (stdout=%q stderr=%q)", code, stdout, stderr)
+	}
+	if !strings.HasPrefix(stderr, "exshell: ") {
+		t.Errorf("stderr = %q, want it to start with %q", stderr, "exshell: ")
+	}
+	if strings.Contains(stderr, "csv:") {
+		t.Errorf("stderr = %q, want no leaked \"csv:\" runtime-error prefix", stderr)
+	}
+}
+
+func TestRun_InvalidDelimCarriageReturnExitsTwo(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "t.csv", []byte("a,b\n1,2\n"))
+
+	stdout, stderr, code := runCLI(t, "--delim", "\r", path)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (stdout=%q stderr=%q)", code, stdout, stderr)
+	}
+	if !strings.HasPrefix(stderr, "exshell: ") {
+		t.Errorf("stderr = %q, want it to start with %q", stderr, "exshell: ")
+	}
+}
+
+// --- I2: an empty xlsx sheet fails loudly instead of printing a blank grid
+// at exit 0 --------------------------------------------------------------
+
+// TestRun_EmptyXLSXSheetExitsOneWithMessage pins I2's repro: an xlsx sheet
+// with zero columns used to print two blank lines and exit 0 —
+// indistinguishable from success, and inconsistent with the CSV
+// equivalent's exit 1 "file is empty".
+func TestRun_EmptyXLSXSheetExitsOneWithMessage(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "book.xlsx")
+	buildXLSX(t, path, func(f *excelize.File) {
+		if _, err := f.NewSheet("Empty"); err != nil {
+			t.Fatalf("NewSheet: %v", err)
+		}
+	})
+
+	stdout, stderr, code := runCLI(t, "--sheet", "Empty", path)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 (stdout=%q stderr=%q)", code, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty (no blank-grid output)", stdout)
+	}
+	if !strings.HasPrefix(stderr, "exshell: ") {
+		t.Errorf("stderr = %q, want it to start with %q", stderr, "exshell: ")
+	}
+	if !strings.Contains(stderr, "Empty") {
+		t.Errorf("stderr = %q, want it to name the empty sheet", stderr)
+	}
+}
+
 func TestRun_OLE2LegacyXLSXExitsOneWithMessageIntact(t *testing.T) {
 	dir := t.TempDir()
 	ole2Header := []byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}
