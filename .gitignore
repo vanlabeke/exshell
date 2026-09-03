@@ -2,3 +2,4 @@
 /.superpowers/
 /testdata/big.csv
 /dist/
+/.credentials/

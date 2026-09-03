@@ -1,4 +1,4 @@
-.PHONY: build test lint install uninstall fixtures clean
+.PHONY: build test lint install uninstall fixtures credentials clean
 
 # Installation prefix. Override for a user-local install that needs no
 # elevation, e.g. `make install PREFIX=$HOME/.local`.
@@ -62,6 +62,13 @@ uninstall:
 # repo is usable without running this target.
 fixtures:
 	go run ./cmd/genfixtures --dir testdata
+
+# credentials runs the release-credential setup: it performs every step that
+# can be automated, then prints full instructions for the three that Apple and
+# GitHub only expose through a browser. Idempotent — re-run it any time to see
+# where you are. Everything lands in .credentials/ (git-ignored).
+credentials:
+	@scripts/setup-credentials.sh
 
 clean:
 	rm -f ./exshell
