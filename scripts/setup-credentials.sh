@@ -1048,7 +1048,10 @@ cmd_all() {
 }
 
 usage() {
-	sed -n '3,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+	# Print the header comment block, stopping at the first line of code —
+	# a fixed line range silently spills source into the help text as soon
+	# as the header grows.
+	awk 'NR>2 { if (/^#/) { sub(/^# ?/, ""); print } else { exit } }' "${BASH_SOURCE[0]}"
 	exit "${1:-0}"
 }
 
