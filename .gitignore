@@ -1,5 +1,17 @@
+# The built binary, at the repository root only — internal/ has a package
+# directory of the same name that must stay tracked.
 /exshell
+
 /.superpowers/
 /testdata/big.csv
 /dist/
+
+# Apple signing material and API keys. Never commit; see the credentials repo.
 /.credentials/
+
+# Agent and tooling state — local to a machine.
+/.claude/
+
+# macOS Finder metadata. Unanchored deliberately: Finder writes one into any
+# directory it touches, not just the root.
+.DS_Store
