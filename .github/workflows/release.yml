@@ -165,8 +165,19 @@ jobs:
   # Regenerating repository metadata needs dpkg-scanpackages, apt-ftparchive
   # and createrepo_c, which are Debian-native — hence a Linux runner rather
   # than fighting Homebrew equivalents on macOS.
+  #
+  # Stable tags only. build-repos.sh writes into a suite hardcoded to
+  # "stable", so without this a `v1.0.0-rc1` tag would push a release
+  # candidate to everyone running `apt upgrade`. SemVer marks a prerelease
+  # with a hyphen after the version, which is the same signal goreleaser's
+  # `prerelease: auto` keys off, so the GitHub release and the package
+  # repositories agree on what counts as stable.
+  #
+  # A prerelease tag still produces a full GitHub release with tarballs,
+  # .deb and .rpm attached — it just does not enter the apt/yum channels.
   publish-repos:
     needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
