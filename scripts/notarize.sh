@@ -59,14 +59,37 @@ ditto -c -k --keepParent "$binary" "$tmpzip"
 
 echo "notarize: submitting $binary (this waits for Apple, typically 1-5 min)" >&2
 
-# --wait blocks until Apple returns Accepted or Invalid, so a rejected
-# submission fails the build rather than silently shipping an unnotarized
-# binary.
-xcrun notarytool submit "$tmpzip" \
+# --wait blocks until Apple reaches a verdict.
+#
+# The verdict is then checked explicitly rather than relying on the exit code:
+# notarytool has historically exited 0 on an Invalid submission, which would
+# ship an unnotarized binary from a build that reported success. This is also
+# the only place notarization can be verified at all — the ticket lives on
+# Apple's servers, and a bare binary cannot be stapled, so no later local
+# check can confirm it.
+out=$(xcrun notarytool submit "$tmpzip" \
 	--key "$AC_KEY_PATH" \
 	--key-id "$AC_KEY_ID" \
 	--issuer "$AC_ISSUER_ID" \
 	--wait \
-	--timeout 30m
+	--timeout 30m 2>&1) || true
+
+printf '%s\n' "$out" >&2
+
+if ! printf '%s' "$out" | grep -q "status: Accepted"; then
+	echo "notarize: Apple did not accept $binary" >&2
+	# The log holds the actual reason (unsigned nested code, missing
+	# hardened runtime, a disallowed entitlement); fetch it rather than
+	# leaving someone to guess.
+	sub=$(printf '%s' "$out" | awk '/id: /{ print $2; exit }')
+	if [ -n "$sub" ]; then
+		echo "notarize: fetching the rejection log for submission $sub" >&2
+		xcrun notarytool log "$sub" \
+			--key "$AC_KEY_PATH" \
+			--key-id "$AC_KEY_ID" \
+			--issuer "$AC_ISSUER_ID" >&2 2>/dev/null || true
+	fi
+	exit 1
+fi
 
 echo "notarize: accepted for $binary" >&2

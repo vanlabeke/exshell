@@ -117,13 +117,33 @@ jobs:
             exit 1
           fi
 
-          # Gatekeeper's actual verdict, not just signature validity. This was
-          # a warning once; v0.0.1 shipped rejected-by-Gatekeeper because of
-          # it. A release that users cannot run is a failed release.
-          if ! spctl --assess --type execute --verbose=4 "$bin"; then
-            echo "::error::spctl rejected the binary — it is not notarized"
+          # The hardened runtime is a notarization prerequisite; without it
+          # Apple rejects the submission.
+          if ! codesign -dv --verbose=4 "$bin" 2>&1 | grep -q "flags=.*runtime"; then
+            echo "::error::binary is not signed with the hardened runtime"
             exit 1
           fi
+
+          # Notarization is NOT asserted here, deliberately. Neither available
+          # local check works on a bare command-line binary:
+          #
+          #   spctl --assess --type execute
+          #     assesses application bundles. On a plain Mach-O it returns
+          #     "rejected (the code is valid but does not seem to be an app)"
+          #     whether or not the binary is notarized — it is not a
+          #     notarization check at all.
+          #
+          #   codesign --test-requirement="=notarized"
+          #     looks for a *stapled* ticket. Stapling only works on .app,
+          #     .dmg and .pkg containers, so a bare binary can never satisfy
+          #     it, however successfully it was notarized.
+          #
+          # The ticket lives on Apple's servers and Gatekeeper fetches it
+          # online, so the authoritative check is Apple's own verdict at
+          # submission time. scripts/notarize.sh requires "status: Accepted"
+          # and fails the build otherwise, which is what actually gates this.
+          echo "Signature and hardened runtime verified."
+          echo "Notarization was asserted at submission time by notarize.sh."
 
       # Hand the Linux packages to the next job rather than rebuilding them.
       - uses: actions/upload-artifact@v4
