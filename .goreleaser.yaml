@@ -166,15 +166,16 @@ nfpms:
 # A formula, not a cask. GoReleaser is phasing out `brews` in favour of
 # `homebrew_casks`, and this deliberately keeps the deprecated stanza:
 #
-#   · Casks from a third-party tap require `brew trust --cask` before they
-#     will install. A formula does not, and asking every user to run an
-#     extra trust command to install a CLI is a worse first impression than
-#     a deprecation warning in our own build log.
 #   · Casks are the idiom for macOS applications — .app bundles, GUI
 #     installers, things that land in /Applications. exshell is a
 #     command-line binary that belongs on $PATH, which is what formulas do.
 #   · Formula support is uniform across macOS and Linux Homebrew; cask
 #     support outside macOS is not something to rely on.
+#
+# Note what this does NOT buy: Homebrew 6 requires `brew trust` for formulae
+# from a non-official tap just as it does for casks, so switching does not
+# spare users that step. Only being accepted into homebrew-core would, and
+# core has its own criteria.
 #
 # `goreleaser check` will warn that `brews` is deprecated. That is expected.
 brews:

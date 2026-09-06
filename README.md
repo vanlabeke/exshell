@@ -20,8 +20,14 @@ tool.
 
 ```bash
 brew tap vanlabeke/tap
+brew trust --formula vanlabeke/tap/exshell
 brew install exshell
 ```
+
+Homebrew 6 requires an explicit trust step for anything from a tap outside
+homebrew-core, formulae included. It is asking whether you trust this tap to
+run its own install code — a fair question for a third party, and one only
+inclusion in homebrew-core would remove.
 
 macOS binaries are a universal build (Apple Silicon and Intel in one file),
 code-signed with a Developer ID and notarized, so Gatekeeper accepts them
