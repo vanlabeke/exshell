@@ -547,6 +547,41 @@ EOF
 
 # --- 2. build the .p12 -------------------------------------------------------
 
+# Prove macOS itself can import the bundle, by importing it into a throwaway
+# keychain that is deleted immediately afterwards.
+#
+# `openssl pkcs12 -in` succeeding proves nothing about this: openssl reads
+# ciphers that Apple's Security framework refuses. The CI job is otherwise the
+# first thing to find out, several minutes into a release.
+verify_p12_importable() {
+	local bundle=$1 pass=$2 kc kcpass
+	command -v security >/dev/null 2>&1 || return 0   # not macOS; CI will check
+
+	kc="$dir/.verify-$$.keychain-db"
+	kcpass=$(openssl rand -base64 12)
+
+	security create-keychain -p "$kcpass" "$kc" >/dev/null 2>&1 || {
+		warn "could not create a scratch keychain; skipping the import check"
+		return 0
+	}
+	if security import "$bundle" -k "$kc" -P "$pass" -T /usr/bin/codesign >/dev/null 2>&1; then
+		ok "macOS can import the bundle"
+		security delete-keychain "$kc" >/dev/null 2>&1 || true
+		return 0
+	fi
+	security delete-keychain "$kc" >/dev/null 2>&1 || true
+	die "macOS refused to import the bundle that was just built.
+
+  This is what CI would have hit: `security import` reports a MAC verification
+  failure and blames the password, when the real cause is a PKCS#12 encrypted
+  with algorithms Apple's Security framework does not accept.
+
+  Remove it and rebuild:
+    rm .credentials/Certificates.p12 .credentials/p12-password.txt
+    scripts/setup-credentials.sh p12"
+}
+
+
 cmd_p12() {
 	cmd_init
 	need openssl
@@ -596,13 +631,26 @@ cmd_p12() {
 		ok "generated an export password (p12-password.txt)"
 	fi
 
+	# Explicit legacy PKCS#12 algorithms. OpenSSL 3 defaults to AES-256-CBC
+	# with a SHA-256 MAC, which macOS `security import` cannot verify — it
+	# reports "MAC verification failed ... (wrong password?)", blaming the
+	# password for what is actually a cipher mismatch. These three flags
+	# produce a bundle every macOS accepts.
 	openssl pkcs12 -export \
 		-inkey "$dir/devid.key" -in "$dir/devid.pem" \
 		-name "Developer ID Application" \
+		-keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
 		-passout "pass:$pass" \
-		-out "$dir/Certificates.p12"
+		-out "$dir/Certificates.p12" 2>/dev/null \
+		|| openssl pkcs12 -export \
+			-inkey "$dir/devid.key" -in "$dir/devid.pem" \
+			-name "Developer ID Application" \
+			-passout "pass:$pass" \
+			-out "$dir/Certificates.p12"
 	chmod 600 "$dir/Certificates.p12"
 	ok "wrote Certificates.p12"
+
+	verify_p12_importable "$dir/Certificates.p12" "$pass"
 
 	# The identity string CI needs is the certificate's Common Name, which
 	# Apple rewrites to include the Team ID.
