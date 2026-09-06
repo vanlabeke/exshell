@@ -16,6 +16,7 @@
 #   scripts/setup-credentials.sh tokens     record the two GitHub tokens
 #   scripts/setup-credentials.sh upload     push all secrets to GitHub
 #   scripts/setup-credentials.sh verify     check secrets, DNS, Pages
+#   scripts/setup-credentials.sh show       print what to save, values included
 #   scripts/setup-credentials.sh shred      securely delete the local copies
 #
 #   scripts/setup-credentials.sh all        run the sequence in order
@@ -109,6 +110,22 @@ manifest_get() {
 
 # --- init --------------------------------------------------------------------
 
+# Re-assert permissions across the whole folder. The script's own umask keeps
+# what it writes at 0600, but a file you copied or dragged in yourself arrives
+# with whatever mode it had — commonly 0644, i.e. a private key readable by
+# every process on the machine. Reports anything it had to tighten, so a
+# too-permissive file is noticed rather than silently corrected.
+harden() {
+	[ -d "$dir" ] || return 0
+	local loose
+	loose=$(find "$dir" -type f ! -perm 600 2>/dev/null | wc -l | tr -d ' ')
+	find "$dir" -type d -exec chmod 700 {} + 2>/dev/null || true
+	find "$dir" -type f -exec chmod 600 {} + 2>/dev/null || true
+	if [ "${loose:-0}" -gt 0 ]; then
+		warn "tightened permissions on $loose file(s) that were readable by others"
+	fi
+}
+
 cmd_init() {
 	mkdir -p "$dir"
 	chmod 700 "$dir"
@@ -149,6 +166,8 @@ apt repository must install a replacement key by hand before `apt update`
 works again for them.
 TXT
 	chmod 600 "$dir/README.txt"
+
+	harden
 }
 
 # --- what to do next ---------------------------------------------------------
@@ -394,11 +413,11 @@ Once it succeeds, verify as a stranger would:
 A pseudo-version there means the ldflags never reached the binary, and the
 release is mislabelled even though everything else worked.
 
-${b}Then put these in your password manager and consider 'shred':${r}
-  Certificates.p12 + its password · AuthKey_*.p8 (Apple will not re-issue it)
-  gpg-private.asc + passphrase + gpg-revoke.asc  ← the one that cannot be
-  replaced cheaply: without it, every machine already trusting your apt
-  repository needs a new key installed by hand.
+${b}Then save your credentials:${r}
+
+  scripts/setup-credentials.sh show    # prints every value to store,
+                                       # including the generated passphrases
+  scripts/setup-credentials.sh shred   # once they are safely stored
 EOF
 }
 
@@ -902,6 +921,64 @@ cmd_verify() {
 	return "$rc"
 }
 
+# --- show --------------------------------------------------------------------
+#
+# Prints everything that belongs in a password manager, values included.
+# Without this the generated passphrases exist only inside files nobody is
+# told to open — and "save this" is useless advice if you cannot see what to
+# save.
+
+show_entry() { printf '\n  %s%s%s\n' "$b" "$*" "$r"; }
+show_field() { printf '    %-14s %s\n' "$1" "$2"; }
+show_file()  {
+	if [ -s "$2" ]; then
+		printf '    %-14s %s\n' "$1" "$2"
+	else
+		printf '    %-14s %s(missing)%s\n' "$1" "$dim" "$r"
+	fi
+}
+
+cmd_show() {
+	[ -d "$dir" ] || die "nothing set up yet — run: scripts/setup-credentials.sh"
+
+	head1 "Copy these into your password manager"
+	printf '  %sThis prints real secrets to your terminal. Clear the scrollback\n  when you are done, and avoid it on a shared screen.%s\n' "$ylw" "$r"
+
+	local identity team key_id issuer gpg_key expiry p8
+	identity=$(manifest_get MACOS_SIGN_IDENTITY)
+	team=$(manifest_get APPLE_TEAM_ID)
+	key_id=$(manifest_get AC_KEY_ID)
+	issuer=$(manifest_get AC_ISSUER_ID)
+	gpg_key=$(manifest_get GPG_KEY_ID)
+	expiry=$(manifest_get TOKEN_EXPIRY)
+	p8=$(compgen -G "$dir/AuthKey_*.p8" 2>/dev/null | head -1 || true)
+
+	show_entry "1. Apple Developer ID  —  recoverable: revoke and reissue"
+	show_file  "attach"   "$dir/Certificates.p12"
+	[ -s "$dir/p12-password.txt" ] && show_field "password" "$(cat "$dir/p12-password.txt")"
+	[ -n "$identity" ] && show_field "identity" "$identity"
+	[ -n "$team" ]     && show_field "team ID"  "$team"
+
+	show_entry "2. App Store Connect  —  ${red}NOT recoverable${r}${b}, Apple allows one download"
+	if [ -n "$p8" ]; then show_file "attach" "$p8"; else show_file "attach" "$dir/AuthKey_*.p8"; fi
+	[ -n "$key_id" ] && show_field "key ID"    "$key_id"
+	[ -n "$issuer" ] && show_field "issuer ID" "$issuer"
+
+	show_entry "3. GPG signing key  —  ${red}the costly one to lose${r}"
+	show_file  "attach"     "$dir/gpg-private.asc"
+	show_file  "attach"     "$dir/gpg-revoke.asc"
+	[ -s "$dir/gpg-passphrase.txt" ] && show_field "passphrase" "$(cat "$dir/gpg-passphrase.txt")"
+	[ -n "$gpg_key" ] && show_field "key ID" "$gpg_key"
+	printf '    %sWithout these, every machine already trusting the apt repository\n    needs a replacement key installed by hand before apt update works.%s\n' "$dim" "$r"
+
+	show_entry "4. GitHub tokens  —  replaceable: generate new ones"
+	[ -s "$dir/token-tap.txt" ]      && show_field "tap token"  "$(cat "$dir/token-tap.txt")"
+	[ -s "$dir/token-packages.txt" ] && show_field "pkg token"  "$(cat "$dir/token-packages.txt")"
+	[ -n "$expiry" ] && show_field "expires" "$expiry"
+
+	printf '\n  %sOnce all four are stored:%s scripts/setup-credentials.sh shred\n\n' "$dim" "$r"
+}
+
 # --- 8. shred ----------------------------------------------------------------
 
 cmd_shred() {
@@ -1066,6 +1143,7 @@ case "${1:-auto}" in
 	tokens)  cmd_tokens ;;
 	upload)  cmd_upload ;;
 	verify)  cmd_verify ;;
+	show)    cmd_show ;;
 	shred)   cmd_shred ;;
 	all)     cmd_all ;;
 	-h|--help|help) usage 0 ;;
