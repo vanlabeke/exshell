@@ -1054,8 +1054,39 @@ cmd_import() {
 	head1 "Import existing Apple credentials"
 
 	# --- the .p12 ---
+	#
+	# "Already there" is not the same as "usable". Validate what is on disk
+	# before skipping: a bundle imported before the Developer ID check
+	# existed, or one left behind by a half-finished cleanup, would otherwise
+	# be silently kept and then rejected later at upload.
 	if [ -s "$dir/Certificates.p12" ]; then
-		ok "Certificates.p12 already imported"
+		local existing_identity stale=""
+		existing_identity=$(manifest_get MACOS_SIGN_IDENTITY)
+
+		if [ ! -s "$dir/p12-password.txt" ]; then
+			stale="its password file is missing, so the bundle cannot be used"
+		else
+			case "$existing_identity" in
+				"Developer ID Application:"*) ;;
+				"") stale="no signing identity was recorded for it" ;;
+				*)  stale="it is an '$existing_identity' certificate" ;;
+			esac
+		fi
+
+		if [ -n "$stale" ]; then
+			# Set aside rather than delete: this may be your only copy of
+			# that certificate, and it is not this script's to destroy.
+			warn "setting aside the existing Certificates.p12 — $stale"
+			mv -f "$dir/Certificates.p12" "$dir/Certificates.p12.rejected"
+			rm -f "$dir/p12-password.txt"
+			manifest_set MACOS_SIGN_IDENTITY ""
+			manifest_set APPLE_TEAM_ID ""
+			say "  ${dim}kept as Certificates.p12.rejected${r}"
+		fi
+	fi
+
+	if [ -s "$dir/Certificates.p12" ]; then
+		ok "Certificates.p12 already imported ($(manifest_get MACOS_SIGN_IDENTITY))"
 	else
 		local src pass subject identity team
 		src=$(read_plain "Path to your .p12 (drag the file into this terminal)")
