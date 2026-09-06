@@ -21,14 +21,17 @@ jobs:
   release:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history: GoReleaser derives the changelog from commits since
           # the previous tag, and a shallow clone silently produces an empty
           # changelog rather than failing.
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      # setup-go v6+ sets GOTOOLCHAIN=local — see the note in ci.yml. It works
+      # here because go.mod carries only `go 1.26.0` and no `toolchain` line,
+      # so the version this action installs is the version the build needs.
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -86,7 +89,7 @@ jobs:
           chmod 600 "$RUNNER_TEMP/signing.key"
           echo "GPG_KEY_FILE=$RUNNER_TEMP/signing.key" >> "$GITHUB_ENV"
 
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
           args: release --clean
@@ -146,7 +149,7 @@ jobs:
           echo "Notarization was asserted at submission time by notarize.sh."
 
       # Hand the Linux packages to the next job rather than rebuilding them.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-packages
           path: |
@@ -166,17 +169,17 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: source
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: linux-packages
           path: packages
 
       - name: Check out the Pages repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: vanlabeke/packages
           token: ${{ secrets.PACKAGES_TOKEN }}

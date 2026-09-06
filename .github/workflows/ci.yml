@@ -15,9 +15,15 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      # setup-go v6+ sets GOTOOLCHAIN=local, so Go will NOT download a
+      # toolchain to satisfy go.mod — it uses exactly what this action
+      # installed. That is fine while go-version-file resolves the `go`
+      # directive itself (1.26.0 here, no `toolchain` line). Add a `toolchain`
+      # directive newer than the `go` directive and the build fails with
+      # "go.mod requires go >= X (running Y; GOTOOLCHAIN=local)".
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -33,7 +39,7 @@ jobs:
       # than at tag time when it is far more annoying. --snapshot needs no
       # tag, no secrets and publishes nothing; the signing and notarization
       # hooks no-op without credentials.
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
           args: release --snapshot --clean --skip=publish
