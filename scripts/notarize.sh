@@ -24,8 +24,24 @@ set -euo pipefail
 binary=${1:?usage: notarize.sh <binary>}
 
 if [ -z "${AC_KEY_ID:-}" ] || [ -z "${AC_ISSUER_ID:-}" ] || [ -z "${AC_KEY_PATH:-}" ]; then
+	# Skipping is right for a local snapshot, and wrong for a release: a
+	# silent skip in CI ships an unnotarized binary that Gatekeeper blocks,
+	# and the only clue is that this step returned suspiciously fast.
+	if [ -n "${CI:-}" ]; then
+		echo "notarize: App Store Connect credentials missing in CI" >&2
+		echo "notarize:   AC_KEY_ID=${AC_KEY_ID:-<unset>}" >&2
+		echo "notarize:   AC_ISSUER_ID=${AC_ISSUER_ID:+<set>}${AC_ISSUER_ID:-<unset>}" >&2
+		echo "notarize:   AC_KEY_PATH=${AC_KEY_PATH:-<unset>}" >&2
+		echo "notarize: refusing to ship an unnotarized binary" >&2
+		exit 1
+	fi
 	echo "notarize: App Store Connect credentials unset, skipping $binary" >&2
 	exit 0
+fi
+
+if [ ! -s "$AC_KEY_PATH" ]; then
+	echo "notarize: AC_KEY_PATH points at nothing readable: $AC_KEY_PATH" >&2
+	exit 1
 fi
 
 if ! command -v xcrun >/dev/null 2>&1; then

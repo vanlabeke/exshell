@@ -107,11 +107,23 @@ jobs:
           bin=dist/darwin-universal_darwin_all/exshell
           lipo -info "$bin"
           codesign --verify --strict --verbose=2 "$bin"
-          # Gatekeeper's actual verdict, not just signature validity. A
-          # notarized binary reports "accepted"; an unnotarized one does not.
-          spctl --assess --type execute --verbose=4 "$bin" || {
-            echo "::warning::spctl did not accept the binary — check notarization"
-          }
+
+          # The certificate must be Developer ID. An Apple Development
+          # certificate signs happily and is then rejected by Gatekeeper on
+          # every machine but the developer's own.
+          if ! codesign -dv --verbose=4 "$bin" 2>&1 | grep -q "Authority=Developer ID Application:"; then
+            echo "::error::binary is not signed with a Developer ID Application certificate"
+            codesign -dv --verbose=4 "$bin" 2>&1 | grep '^Authority=' || true
+            exit 1
+          fi
+
+          # Gatekeeper's actual verdict, not just signature validity. This was
+          # a warning once; v0.0.1 shipped rejected-by-Gatekeeper because of
+          # it. A release that users cannot run is a failed release.
+          if ! spctl --assess --type execute --verbose=4 "$bin"; then
+            echo "::error::spctl rejected the binary — it is not notarized"
+            exit 1
+          fi
 
       # Hand the Linux packages to the next job rather than rebuilding them.
       - uses: actions/upload-artifact@v4

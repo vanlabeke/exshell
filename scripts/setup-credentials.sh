@@ -605,10 +605,25 @@ cmd_p12() {
 	if [ -n "$identity" ]; then
 		manifest_set MACOS_SIGN_IDENTITY "$identity"
 		ok "identity: $identity"
+		# Fatal, not a warning. An Apple Development certificate signs happily
+		# and is then rejected by Gatekeeper on every machine but your own — a
+		# failure that only surfaces to users after the release has shipped.
 		case "$identity" in
 			"Developer ID Application:"*) ;;
-			*) warn "that is not a Developer ID Application certificate"
-			   warn "only Developer ID can sign software distributed outside the App Store" ;;
+			*)
+				rm -f "$dir/Certificates.p12"
+				die "that is an '$identity' certificate, not a Developer ID Application one.
+
+  Only 'Developer ID Application' can sign software distributed outside the
+  App Store. Apple Development certificates cannot be notarized, and macOS
+  rejects them on every machine except your own registered devices.
+
+  Create the right one at
+    https://developer.apple.com/account/resources/certificates/add
+  choosing Software -> Developer ID Application.
+
+  (The imported bundle has been removed so it cannot be uploaded by mistake.)"
+				;;
 		esac
 		team=$(printf '%s' "$identity" | sed -n 's/.*(\([A-Z0-9]*\)).*/\1/p')
 		[ -n "$team" ] && { manifest_set APPLE_TEAM_ID "$team"; ok "team ID: $team"; }
@@ -816,6 +831,13 @@ cmd_upload() {
 	issuer=$(manifest_get AC_ISSUER_ID)
 	gpg_key=$(manifest_get GPG_KEY_ID)
 	[ -n "$identity" ] || missing+=("MACOS_SIGN_IDENTITY in manifest.env")
+	# Last line of defence: never push a non-Developer-ID identity to CI.
+	case "${identity:-}" in
+		""|"Developer ID Application:"*) ;;
+		*) die "refusing to upload: MACOS_SIGN_IDENTITY is '$identity', which is
+  not a Developer ID Application certificate. Releases signed with it are
+  rejected by Gatekeeper on every machine but your own." ;;
+	esac
 	[ -n "$key_id" ]   || missing+=("AC_KEY_ID in manifest.env")
 	[ -n "$issuer" ]   || missing+=("AC_ISSUER_ID in manifest.env")
 	[ -n "$gpg_key" ]  || missing+=("GPG_KEY_ID in manifest.env")
@@ -1070,10 +1092,25 @@ cmd_import() {
 		if [ -n "$identity" ]; then
 			manifest_set MACOS_SIGN_IDENTITY "$identity"
 			ok "identity: $identity"
+			# Fatal, not a warning. An Apple Development certificate signs happily
+			# and is then rejected by Gatekeeper on every machine but your own — a
+			# failure that only surfaces to users after the release has shipped.
 			case "$identity" in
 				"Developer ID Application:"*) ;;
-				*) warn "that does not look like a Developer ID Application certificate"
-				   warn "only Developer ID can sign software distributed outside the App Store" ;;
+				*)
+					rm -f "$dir/Certificates.p12" "$dir/p12-password.txt"
+					die "that is an '$identity' certificate, not a Developer ID Application one.
+
+  Only 'Developer ID Application' can sign software distributed outside the
+  App Store. Apple Development certificates cannot be notarized, and macOS
+  rejects them on every machine except your own registered devices.
+
+  Create the right one at
+    https://developer.apple.com/account/resources/certificates/add
+  choosing Software -> Developer ID Application.
+
+  (The imported bundle has been removed so it cannot be uploaded by mistake.)"
+					;;
 			esac
 			team=$(printf '%s' "$identity" | sed -n 's/.*(\([A-Z0-9]*\)).*/\1/p')
 			[ -n "$team" ] && { manifest_set APPLE_TEAM_ID "$team"; ok "team ID: $team"; }

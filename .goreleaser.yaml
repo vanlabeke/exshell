@@ -82,10 +82,15 @@ universal_binaries:
     ids:
       - darwin
     replace: true
+    # output: true is not cosmetic. Without it these hooks run silently, and a
+    # hook that skipped its work looks identical in the log to one that did it
+    # — which is exactly how v0.0.1 shipped unnotarized.
     hooks:
       post:
-        - ./scripts/codesign.sh "{{ .Path }}"
-        - ./scripts/notarize.sh "{{ .Path }}"
+        - cmd: ./scripts/codesign.sh "{{ .Path }}"
+          output: true
+        - cmd: ./scripts/notarize.sh "{{ .Path }}"
+          output: true
 
 # One archive per OS/arch. A second format for darwin would give the Homebrew
 # tap two candidates for the same OS/arch, which it rejects — and the zip that
@@ -153,16 +158,26 @@ nfpms:
       signature:
         key_file: '{{ envOrDefault "GPG_KEY_FILE" "" }}'
 
-# Homebrew cask, written to vanlabeke/homebrew-tap on every release.
+# Homebrew formula, written to vanlabeke/homebrew-tap on every release.
 #
 #     brew tap vanlabeke/tap
-#     brew install --cask exshell
+#     brew install exshell
 #
-# A cask rather than a formula: GoReleaser is phasing out `brews`, and
-# Homebrew's own guidance is that pre-built binaries belong in casks —
-# formulas are expected to build from source. Casks also handle the macOS
-# quarantine attribute for us.
-homebrew_casks:
+# A formula, not a cask. GoReleaser is phasing out `brews` in favour of
+# `homebrew_casks`, and this deliberately keeps the deprecated stanza:
+#
+#   · Casks from a third-party tap require `brew trust --cask` before they
+#     will install. A formula does not, and asking every user to run an
+#     extra trust command to install a CLI is a worse first impression than
+#     a deprecation warning in our own build log.
+#   · Casks are the idiom for macOS applications — .app bundles, GUI
+#     installers, things that land in /Applications. exshell is a
+#     command-line binary that belongs on $PATH, which is what formulas do.
+#   · Formula support is uniform across macOS and Linux Homebrew; cask
+#     support outside macOS is not something to rely on.
+#
+# `goreleaser check` will warn that `brews` is deprecated. That is expected.
+brews:
   - name: exshell
     # tarballs only — see the archives comment above.
     ids:
@@ -172,12 +187,17 @@ homebrew_casks:
       name: homebrew-tap
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Casks
+    directory: Formula
     homepage: https://github.com/vanlabeke/exshell
     description: Terminal viewer for CSV and XLSX files
+    license: BSD-3-Clause
     commit_author:
       name: goreleaser
       email: noreply@vanlabeke.dev
+    install: |
+      bin.install "exshell"
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/exshell --version")
 
 changelog:
   use: github
