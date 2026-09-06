@@ -407,7 +407,7 @@ The configuration is verified — a local snapshot builds all fifteen artifacts
 
 Once it succeeds, verify as a stranger would:
 
-  brew tap vanlabeke/tap && brew install --cask exshell
+  brew tap vanlabeke/tap && brew install exshell
   exshell --version        # must print 0.1.0, not a v0.0.0-… pseudo-version
 
 A pseudo-version there means the ldflags never reached the binary, and the
@@ -553,8 +553,15 @@ cmd_p12() {
 
 	[ -s "$dir/devid.key" ] || die "no devid.key — run 'csr' first"
 
+	# Name the identity, not just the file. "Certificates.p12 already exists"
+	# reads as "still using the old certificate" when it is in fact the
+	# bundle this command wrote on a previous run.
 	if [ -s "$dir/Certificates.p12" ]; then
-		ok "Certificates.p12 already exists, keeping it"
+		local kept
+		kept=$(manifest_get MACOS_SIGN_IDENTITY)
+		ok "Certificates.p12 already built${kept:+ — $kept}"
+		say "  ${dim}To rebuild from a different certificate, remove it first:${r}"
+		say "  ${dim}  rm .credentials/Certificates.p12 .credentials/p12-password.txt${r}"
 		return 0
 	fi
 

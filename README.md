@@ -20,7 +20,7 @@ tool.
 
 ```bash
 brew tap vanlabeke/tap
-brew install --cask exshell
+brew install exshell
 ```
 
 macOS binaries are a universal build (Apple Silicon and Intel in one file),
