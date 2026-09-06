@@ -85,12 +85,22 @@ universal_binaries:
     # output: true is not cosmetic. Without it these hooks run silently, and a
     # hook that skipped its work looks identical in the log to one that did it
     # — which is exactly how v0.0.1 shipped unnotarized.
+    #
+    # SNAPSHOT tells the hooks which kind of build this is. They must fail
+    # loudly on a real release with no credentials, and skip quietly on a
+    # snapshot, which never has any. Keying that off CI does not work: CI is
+    # set for the snapshot job in ci.yml too, so it turns every branch build
+    # red. This is the only signal that separates the two.
     hooks:
       post:
         - cmd: ./scripts/codesign.sh "{{ .Path }}"
           output: true
+          env:
+            - SNAPSHOT={{ .IsSnapshot }}
         - cmd: ./scripts/notarize.sh "{{ .Path }}"
           output: true
+          env:
+            - SNAPSHOT={{ .IsSnapshot }}
 
 # One archive per OS/arch. A second format for darwin would give the Homebrew
 # tap two candidates for the same OS/arch, which it rejects — and the zip that

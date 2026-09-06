@@ -24,18 +24,22 @@ set -euo pipefail
 binary=${1:?usage: notarize.sh <binary>}
 
 if [ -z "${AC_KEY_ID:-}" ] || [ -z "${AC_ISSUER_ID:-}" ] || [ -z "${AC_KEY_PATH:-}" ]; then
-	# Skipping is right for a local snapshot, and wrong for a release: a
-	# silent skip in CI ships an unnotarized binary that Gatekeeper blocks,
-	# and the only clue is that this step returned suspiciously fast.
-	if [ -n "${CI:-}" ]; then
-		echo "notarize: App Store Connect credentials missing in CI" >&2
+	# Skipping is right for a snapshot, and wrong for a release: a silent
+	# skip ships an unnotarized binary that Gatekeeper blocks, and the only
+	# clue is that this step returned suspiciously fast.
+	#
+	# SNAPSHOT is set by the GoReleaser hook from {{ .IsSnapshot }}. Anything
+	# other than "true" — including unset, i.e. run by hand — counts as a
+	# release and must fail rather than quietly produce an unsigned artifact.
+	if [ "${SNAPSHOT:-}" != "true" ]; then
+		echo "notarize: App Store Connect credentials missing for a release build" >&2
 		echo "notarize:   AC_KEY_ID=${AC_KEY_ID:-<unset>}" >&2
 		echo "notarize:   AC_ISSUER_ID=${AC_ISSUER_ID:+<set>}${AC_ISSUER_ID:-<unset>}" >&2
 		echo "notarize:   AC_KEY_PATH=${AC_KEY_PATH:-<unset>}" >&2
 		echo "notarize: refusing to ship an unnotarized binary" >&2
 		exit 1
 	fi
-	echo "notarize: App Store Connect credentials unset, skipping $binary" >&2
+	echo "notarize: snapshot build, skipping notarization of $binary" >&2
 	exit 0
 fi
 

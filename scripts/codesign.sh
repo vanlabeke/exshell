@@ -13,7 +13,16 @@ set -euo pipefail
 binary=${1:?usage: codesign.sh <binary>}
 
 if [ -z "${MACOS_SIGN_IDENTITY:-}" ]; then
-	echo "codesign: MACOS_SIGN_IDENTITY unset, leaving $binary unsigned" >&2
+	# Same reasoning as notarize.sh: a release that quietly skips signing
+	# ships a binary Gatekeeper blocks, and nothing in the log says so.
+	# SNAPSHOT comes from the GoReleaser hook as {{ .IsSnapshot }}; anything
+	# but "true" is treated as a release and must fail.
+	if [ "${SNAPSHOT:-}" != "true" ]; then
+		echo "codesign: MACOS_SIGN_IDENTITY unset for a release build" >&2
+		echo "codesign: refusing to ship an unsigned binary" >&2
+		exit 1
+	fi
+	echo "codesign: snapshot build, leaving $binary unsigned" >&2
 	exit 0
 fi
 
